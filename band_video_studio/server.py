@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -43,6 +44,19 @@ def list_videos():
     return store.list_videos()
 
 
+def _import_job(video: dict):
+    """Proxy + full default analysis, chained so a fresh import is ready to use.
+
+    Detection runs automatically with the free local defaults; the user can
+    still re-detect from the UI (e.g. to add the paid Claude pass).
+    """
+    def run(progress=None):
+        _prepare(video, progress)
+        return _run_analysis(video, AnalyzeBody(), progress)
+
+    return jobs.submit("import", run)
+
+
 @app.post("/api/videos/register")
 def register_video(body: RegisterBody):
     src = Path(body.path).expanduser()
@@ -50,7 +64,7 @@ def register_video(body: RegisterBody):
         raise HTTPException(400, f"no file at {src}")
     meta = probe.probe(str(src))
     video = store.add_video(str(src), body.name or src.name, meta)
-    job = jobs.submit("proxy", lambda progress=None: _prepare(video, progress) and None)
+    job = _import_job(video)
     return {"video": video, "job": job["id"]}
 
 
@@ -63,7 +77,7 @@ async def upload_video(file: UploadFile):
         shutil.copyfileobj(file.file, f)
     meta = probe.probe(str(dest))
     video = store.add_video(str(dest), file.filename, meta)
-    job = jobs.submit("proxy", lambda progress=None: _prepare(video, progress) and None)
+    job = _import_job(video)
     return {"video": video, "job": job["id"]}
 
 
@@ -106,27 +120,33 @@ class AnalyzeBody(BaseModel):
     claude_pass: bool = False       # optional paid deep pass on candidates
 
 
+def _run_analysis(video: dict, body: AnalyzeBody, progress=None) -> dict:
+    """Songs/highlights/fun-moment detection; shared by import and re-detect."""
+    video_id = video["id"]
+    proxy = str(store.video_dir(video_id) / "proxy.mp4")
+    result = audio.analyze(video["source_path"], progress=progress)
+    duration = video["meta"]["duration"]
+    if body.fun_detection:
+        result["fun_moments"] = detect.find_fun_moments(
+            proxy, result, duration, sweep=body.sweep, progress=progress
+        )
+        if body.claude_pass and vision.available():
+            result["fun_moments"] = vision.enrich_fun_moments(
+                proxy, result["fun_moments"], progress=progress
+            )
+    else:
+        result["fun_moments"] = []
+    store.save_artifact(video_id, "analysis", result)
+    return {"songs": len(result["songs"]), "fun_moments": len(result["fun_moments"])}
+
+
 @app.post("/api/videos/{video_id}/analyze")
 def analyze(video_id: str, body: AnalyzeBody):
     video = _video_or_404(video_id)
 
     def run(progress=None):
         _prepare(video, progress)
-        proxy = str(store.video_dir(video_id) / "proxy.mp4")
-        result = audio.analyze(video["source_path"], progress=progress)
-        duration = video["meta"]["duration"]
-        if body.fun_detection:
-            result["fun_moments"] = detect.find_fun_moments(
-                proxy, result, duration, sweep=body.sweep, progress=progress
-            )
-            if body.claude_pass and vision.available():
-                result["fun_moments"] = vision.enrich_fun_moments(
-                    proxy, result["fun_moments"], progress=progress
-                )
-        else:
-            result["fun_moments"] = []
-        store.save_artifact(video_id, "analysis", result)
-        return {"songs": len(result["songs"]), "fun_moments": len(result["fun_moments"])}
+        return _run_analysis(video, body, progress)
 
     return jobs.submit("analyze", run)
 
@@ -188,6 +208,17 @@ async def sync_audio(video_id: str, file: UploadFile):
     return jobs.submit("sync", run)
 
 
+@app.get("/api/videos/{video_id}/sync-audio/file")
+def sync_audio_file(video_id: str):
+    """Stream the aligned clean recording so the UI can audition the alignment."""
+    _video_or_404(video_id)
+    sync = store.load_artifact(video_id, "sync")
+    path = Path(sync.get("ref_path", "")) if sync else None
+    if not path or not path.exists():
+        raise HTTPException(404, "no aligned recording")
+    return FileResponse(path)
+
+
 @app.delete("/api/videos/{video_id}/sync-audio")
 def clear_sync(video_id: str):
     """Forget the alignment so Render edit goes back to the original soundtrack."""
@@ -219,7 +250,8 @@ class EditBody(BaseModel):
     views: list[str] | None = None   # subset of crop names; default all
     smart: bool = True               # content-aware, beat-aligned switching
     camera_motion: bool = False      # subtle handheld drift / push-in / pano pan
-    transitions: bool = False        # glide between views (connects the scene)
+    transitions: bool = True         # glide between views (connects the scene)
+    name: str | None = None          # optional output filename (sans extension)
     seed: int | None = None
 
 
@@ -233,7 +265,34 @@ def _events_from_analysis(analysis: dict | None, start: float, end: float) -> li
                        "type": "instrumental" if h.get("kind") == "instrumental" else "peak"})
     for m in analysis.get("fun_moments", []):
         events.append({"start": m["start"], "end": m["end"], "type": "fun"})
+    # singing entrances: cut to the singer just as the vocal comes in
+    for seg in analysis.get("vocal_segments", []):
+        events.append({"start": seg["start"], "end": min(seg["end"], seg["start"] + 5.0),
+                       "type": "vocal_start"})
     return [e for e in events if e["start"] < end and e["end"] > start]
+
+
+_SINGER_NAME_HINTS = ("sing", "vocal", "vox", "唱", "主唱")
+
+
+def _singer_views(crops: dict[str, dict], views: list[str]) -> set[str]:
+    """Views marked role=singer, or (with no explicit role) named like a singer."""
+    out = set()
+    for v in views:
+        role = (crops[v].get("role") or "").lower()
+        if role == "singer" or (not role and any(h in v.lower() for h in _SINGER_NAME_HINTS)):
+            out.add(v)
+    return out
+
+
+def _export_filename(body: EditBody, start: float, end: float, synced: bool) -> str:
+    """User-chosen name (sanitized) or the descriptive default."""
+    base = re.sub(r"[^\w\- .()\[\]]", "", (body.name or "").strip(), flags=re.UNICODE)
+    base = base.strip(". ").removesuffix(".mp4")
+    if not base:
+        suffix = "_synced" if synced else ""
+        base = f"edit_{int(start)}-{int(end)}_{body.orientation}{suffix}"
+    return base + ".mp4"
 
 
 @app.post("/api/videos/{video_id}/edit")
@@ -273,19 +332,29 @@ def make_edit(video_id: str, body: EditBody):
                 progress("measuring per-view motion")
             tracks = detect.view_activity(proxy, view_crops, start, end)
             activity = detect.activity_scores(tracks)
-            pano = {v for v in views if editor.is_pano(crops[v], out_w / out_h)}
+            pano = {v for v in views
+                    if (crops[v].get("role") or "").lower() == "wide"
+                    or editor.is_pano(crops[v], out_w / out_h)}
+            windows = (analysis or {}).get("windows") or []
+            vocal_track = (
+                ([w["t"] for w in windows], [w.get("vocals", 0.0) for w in windows])
+                if windows else None
+            )
             cuts = editor.build_smart_cutlist(
                 views, start, end,
                 switch_s=body.switch_s,
                 beats=(analysis or {}).get("beats"),
                 events=_events_from_analysis(analysis, start, end),
-                activity=activity, pano_views=pano, seed=body.seed,
+                activity=activity, pano_views=pano,
+                singer_views=_singer_views(crops, views),
+                vocal_track=vocal_track,
+                centers={v: crops[v]["x"] + crops[v]["w"] / 2 for v in views},
+                seed=body.seed,
             )
         else:
             cuts = editor.build_cutlist(views, start, end, body.switch_s, body.seed)
-        suffix = "_synced" if audio_source else ""
-        out = store.video_dir(video_id) / "exports" / (
-            f"edit_{int(start)}-{int(end)}_{body.orientation}{suffix}.mp4"
+        out = store.video_dir(video_id) / "exports" / _export_filename(
+            body, start, end, bool(audio_source)
         )
         editor.render(
             video["source_path"], video["meta"]["width"], video["meta"]["height"],
