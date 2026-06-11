@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -45,20 +47,44 @@ def probe(path: str) -> dict:
     }
 
 
+# one lock per proxy path: a second caller (e.g. analyze clicked while the
+# register-time transcode is still running) waits instead of reading a
+# half-written file
+_proxy_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+
+
+def _is_valid_media(path: Path) -> bool:
+    try:
+        probe(str(path))
+        return True
+    except RuntimeError:
+        return False
+
+
 def make_proxy(src: str, dest: Path, height: int = 540, progress=None) -> Path:
-    """Downscaled H.264 proxy for browser playback and frame sampling."""
-    if dest.exists():
-        return dest
-    if progress:
-        progress("transcoding proxy")
-    _run([
-        "ffmpeg", "-y", "-i", src,
-        "-vf", f"scale=-2:{height}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-        "-c:a", "aac", "-b:a", "96k",
-        "-movflags", "+faststart",
-        str(dest),
-    ])
+    """Downscaled H.264 proxy for browser playback and frame sampling.
+
+    Safe under concurrency: transcodes to a temp file and renames atomically,
+    so dest only ever exists complete. A pre-existing broken dest (from an
+    interrupted run) is detected and re-transcoded.
+    """
+    with _proxy_locks[str(dest)]:
+        if dest.exists():
+            if _is_valid_media(dest):
+                return dest
+            dest.unlink()  # leftover partial file from a crashed/killed run
+        if progress:
+            progress("transcoding proxy")
+        tmp = dest.with_name(dest.name + ".part.mp4")
+        _run([
+            "ffmpeg", "-y", "-i", src,
+            "-vf", f"scale=-2:{height}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
+            "-c:a", "aac", "-b:a", "96k",
+            "-movflags", "+faststart",
+            str(tmp),
+        ])
+        tmp.replace(dest)
     return dest
 
 
