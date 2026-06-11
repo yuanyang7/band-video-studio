@@ -70,6 +70,22 @@ def list_videos() -> list[dict]:
         return list(_load_index().values())
 
 
+def load_library() -> dict:
+    """Library config: {"folders": [path, ...]}."""
+    path = DATA_DIR / "library.json"
+    if path.exists():
+        return json.loads(path.read_text())
+    return {"folders": []}
+
+
+def save_library(config: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = DATA_DIR / "library.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(config, indent=2))
+    tmp.replace(path)
+
+
 def save_artifact(video_id: str, name: str, data: dict | list) -> None:
     path = video_dir(video_id) / f"{name}.json"
     tmp = path.with_suffix(".tmp")
