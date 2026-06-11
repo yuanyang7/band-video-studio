@@ -83,7 +83,7 @@ def enrich_fun_moments(source: str, moments: list[dict], progress=None) -> list[
     client = anthropic.Anthropic()
     for i, moment in enumerate(moments):
         if progress:
-            progress(f"Claude judging moment {i + 1}/{len(moments)}")
+            progress(f"Claude judging moment {i + 1}/{len(moments)}", pct=int(((i + 1) / max(len(moments), 1)) * 100))
         hint = f"{moment['type']}, local score {moment['score']}"
         try:
             verdict = judge_moment(client, source, moment["start"], moment["end"], hint)

@@ -95,6 +95,56 @@ def test_smart_cutlist_prefers_active_view_on_peak():
     assert cuts[0]["view"] == "solo"
 
 
+def test_smart_cutlist_routes_vocal_start_to_singer():
+    events = [{"start": 4.0, "end": 9.0, "type": "vocal_start"}]
+    cuts = build_smart_cutlist(
+        ["guitar", "singer"], 0.0, 16.0, switch_s=4.0,
+        events=events, singer_views={"singer"}, w_audio=10.0, seed=1,
+    )
+    hit = [c for c in cuts if c["start"] < 9.0 and c["end"] > 4.0 and c["view"] == "singer"]
+    assert hit and any(c["reason"] == "vocal-start->singer" for c in hit)
+
+
+def test_smart_cutlist_sustained_vocals_favour_singer():
+    # constant strong singing -> the singer view should get the biggest share
+    vocal_track = ([0.0, 60.0], [0.8, 0.8])
+    cuts = build_smart_cutlist(
+        ["a", "b", "singer"], 0.0, 60.0, switch_s=4.0,
+        singer_views={"singer"}, vocal_track=vocal_track, w_vocal=5.0, seed=4,
+    )
+    share = {}
+    for c in cuts:
+        share[c["view"]] = share.get(c["view"], 0.0) + c["end"] - c["start"]
+    assert share["singer"] == max(share.values())
+
+
+def test_smart_cutlist_center_view_gets_most_screen_time():
+    centers = {"left": 0.1, "center": 0.5, "right": 0.9}
+    cuts = build_smart_cutlist(
+        ["left", "center", "right"], 0.0, 200.0, switch_s=4.0,
+        centers=centers, w_center=2.0, even_weight=0.5, seed=6,
+    )
+    share = {}
+    for c in cuts:
+        share[c["view"]] = share.get(c["view"], 0.0) + c["end"] - c["start"]
+    assert set(share) == {"left", "center", "right"}  # everyone still appears
+    assert share["center"] == max(share.values())
+
+
+def test_smart_cutlist_wide_view_returns_regularly():
+    cuts = build_smart_cutlist(
+        ["a", "b", "wide"], 0.0, 120.0, switch_s=4.0,
+        pano_views={"wide"}, seed=7,
+    )
+    wide_cuts = [c for c in cuts if c["view"] == "wide"]
+    assert wide_cuts, "the wide view never appeared"
+    # never more than ~5 switch lengths without coming back to the wide view
+    last_end = 0.0
+    for c in wide_cuts:
+        assert c["start"] - last_end <= 5 * 4.0 + 1e-6
+        last_end = c["end"]
+
+
 # ------------------------------------------------------- camera movement
 
 def test_is_pano_detects_wide_box():

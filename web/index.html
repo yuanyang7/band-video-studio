@@ -11,6 +11,7 @@
   <h1>🎸 Band Video Studio</h1>
   <section>
     <h2>Add video</h2>
+    <p class="hint">Detection (songs, highlights, fun moments, singing) runs automatically after import.</p>
     <input type="file" id="upload-file" accept="video/*">
     <div class="row">
       <input type="text" id="register-path" placeholder="…or local file path (no copy)">
@@ -21,8 +22,44 @@
     <h2>Videos</h2>
     <ul id="video-list"></ul>
   </section>
-  <div id="job-status"></div>
+  <section>
+    <h2>Library</h2>
+    <p class="hint">Watched folders (e.g. a NAS mount). Scan imports and analyzes new videos one at a time; bad files are skipped, not fatal.</p>
+    <div class="row">
+      <input type="text" id="lib-folder" placeholder="folder path, e.g. /Volumes/NAS/band">
+      <button id="lib-add">Add</button>
+    </div>
+    <ul id="lib-folders"></ul>
+    <div class="row">
+      <button id="lib-scan">Scan</button>
+      <input type="number" id="lib-limit" min="1" step="1" placeholder="max per scan" title="import at most this many new videos per scan (optional — useful for a huge backlog)">
+    </div>
+    <div class="row">
+      <button id="lib-best">🌍 Best moments</button>
+    </div>
+  </section>
+  <div id="job-status">
+    <div id="job-text"></div>
+    <div id="job-bar-wrap" hidden>
+      <div id="job-bar"></div>
+    </div>
+  </div>
 </aside>
+
+<main id="library-view" hidden>
+  <div id="panels">
+    <section class="panel">
+      <h2>Funniest moments — whole library</h2>
+      <p class="hint">Across every analyzed video, by fused laugh/smile score. Click to open the video at that moment.</p>
+      <ul id="best-fun"></ul>
+    </section>
+    <section class="panel">
+      <h2>Most exaggerated expressions</h2>
+      <p class="hint">Ranked by peak smile blendshape. Scores are only roughly comparable across videos.</p>
+      <ul id="best-expr"></ul>
+    </section>
+  </div>
+</main>
 
 <main id="main" hidden>
   <video id="player" controls></video>
@@ -31,69 +68,96 @@
     <span class="chip song">song</span>
     <span class="chip highlight">highlight</span>
     <span class="chip instrumental">instrumental</span>
+    <span class="chip singing">singing</span>
     <span class="chip fun">fun</span>
     <span class="chip lyric">lyric line</span>
   </div>
 
   <div id="panels">
     <section class="panel">
-      <h2>Analyze</h2>
+      <h2>Detection</h2>
+      <p class="hint">Runs automatically when a video is imported. Re-run any time, e.g. to add the Claude deep pass.</p>
       <label><input type="checkbox" id="opt-fun" checked> fun-moment detection (local, free)</label>
       <label><input type="checkbox" id="opt-sweep" checked> sweep whole video for smiles</label>
       <label><input type="checkbox" id="opt-claude"> Claude deep pass on candidates (API cost)</label>
-      <button id="analyze-btn">Run analysis</button>
+      <button id="analyze-btn">Re-detect</button>
       <div id="analysis-summary"></div>
       <ul id="moments"></ul>
     </section>
 
     <section class="panel">
-      <h2>Player crops</h2>
-      <p class="hint">Grab a frame, drag a box per player, name it. Used for the auto edit.</p>
-      <button id="grab-frame">Grab frame at playhead</button>
-      <div id="crop-wrap"><canvas id="crop-canvas"></canvas></div>
-      <ul id="crop-list"></ul>
-      <button id="save-crops">Save crops</button>
-    </section>
-
-    <section class="panel">
-      <h2>Export edit</h2>
-      <p class="hint">Click the timeline to seek. Use the button to select the song or gap at the playhead, then drag the blue edges to fine-tune.</p>
-      <div class="row">
-        <label>start <input type="number" id="edit-start" step="0.1" min="0"></label>
-        <label>end <input type="number" id="edit-end" step="0.1" min="0"></label>
-        <button id="select-at-playhead" type="button">Select range at playhead</button>
-      </div>
-      <div class="row">
-        <label>switch ~every <input type="number" id="edit-switch" value="4" step="0.5" min="1"> s</label>
-        <select id="edit-orientation">
-          <option value="horizontal">horizontal 16:9</option>
-          <option value="vertical">vertical 9:16</option>
-        </select>
-      </div>
-      <label><input type="checkbox" id="opt-smart" checked> smart switching (who's playing, beat-aligned)</label>
-      <label><input type="checkbox" id="opt-motion"> natural camera movement (drift / push-in / pano pan)</label>
-      <label><input type="checkbox" id="opt-transitions"> connecting transitions (glide between views)</label>
-      <button id="export-btn">Render edit</button>
-      <ul id="exports"></ul>
-    </section>
-
-    <section class="panel">
       <h2>Sync to recording</h2>
-      <p class="hint">Upload a clean recording of a song played in this video to align it to the take. Review the match below; then <b>Render edit</b> crops the aligned span and uses this recording as the soundtrack (original muted).</p>
+      <p class="hint">Upload a clean recording of a song played in this video to align it to the take. Once aligned, listen to either track below, and Export uses this recording as the soundtrack (camera audio muted).</p>
       <input type="file" id="sync-file" accept="audio/*">
       <button id="sync-btn">Align</button>
       <div id="sync-result" class="hint"></div>
+      <div id="track-mixer" hidden>
+        <div class="track">
+          <button id="trk-rec" class="trk" title="toggle this track">🎙 recording</button>
+          <div class="trk-bar"><div id="rec-span" class="trk-span rec"></div></div>
+        </div>
+        <div class="track">
+          <button id="trk-cam" class="trk" title="toggle this track">🎥 camera audio</button>
+          <div class="trk-bar"><div class="trk-span cam"></div></div>
+        </div>
+        <p class="hint">Playback follows the main player — toggle tracks to compare the camera audio with the aligned recording.</p>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Shooting simulation</h2>
+      <p class="hint">Simulates a multi-camera shoot from the fixed wide shot: drag a box per player, give it a name and (optionally) a role. The cut switches between these virtual cameras — singer when the vocal comes in, soloist on peaks, the wide view at regular beats.</p>
+      <button id="grab-frame">Grab frame at playhead</button>
+      <div class="row">
+        <label>max upscale <input type="range" id="max-upscale" min="1.2" max="4" step="0.1" value="2"> <span id="max-upscale-val">2.0</span>x</label>
+        <span class="hint">(lower = larger crop, less blur)</span>
+      </div>
+      <div id="crop-wrap"><canvas id="crop-canvas"></canvas></div>
+      <ul id="crop-list"></ul>
+      <button id="save-crops">Save cameras</button>
+      <div class="row">
+        <label>switch ~every <input type="number" id="edit-switch" value="4" step="0.5" min="1"> s</label>
+      </div>
+      <label><input type="checkbox" id="opt-smart" checked> smart switching (who's playing/singing, beat-aligned)</label>
+      <label><input type="checkbox" id="opt-motion"> natural camera movement (drift / push-in / pano pan)</label>
+      <label><input type="checkbox" id="opt-transitions" checked> connecting transitions (glide between views)</label>
+      <label><input type="checkbox" id="opt-sharpen"> sharpen (recover detail after crop upscale)</label>
+      <label><input type="checkbox" id="opt-denoise"> denoise (reduce grain from low light)</label>
     </section>
 
     <section class="panel">
       <h2>Lyrics match <span id="lyrics-avail" class="hint"></span></h2>
+      <p class="hint">Experimental — being revisited.</p>
       <input type="text" id="lyrics-song" placeholder="song name">
       <textarea id="lyrics-text" rows="6" placeholder="paste lyrics, one line per row"></textarea>
-      <p class="hint">Uses the start/end fields above as the song range.</p>
+      <p class="hint">Uses the export range below as the song range.</p>
       <button id="lyrics-btn">Match lyrics</button>
       <ul id="lyrics-lines"></ul>
     </section>
   </div>
+
+  <section class="panel" id="export-panel">
+    <h2>Export</h2>
+    <p class="hint">Click the timeline to seek. Use the button to select the song or gap at the playhead, then drag the blue edges to fine-tune.</p>
+    <div class="row">
+      <label>start <input type="number" id="edit-start" step="0.1" min="0"></label>
+      <label>end <input type="number" id="edit-end" step="0.1" min="0"></label>
+      <button id="select-at-playhead" type="button">Select range at playhead</button>
+    </div>
+    <div class="row">
+      <select id="edit-orientation">
+        <option value="horizontal">horizontal 1080p</option>
+        <option value="horizontal_2k">horizontal 2K</option>
+        <option value="horizontal_4k">horizontal 4K</option>
+        <option value="vertical">vertical 1080p</option>
+        <option value="vertical_2k">vertical 2K</option>
+        <option value="vertical_4k">vertical 4K</option>
+      </select>
+      <input type="text" id="export-name" placeholder="file name (optional)">
+      <button id="export-btn">Export</button>
+    </div>
+    <ul id="exports"></ul>
+  </section>
 </main>
 <script src="app.js"></script>
 </body>

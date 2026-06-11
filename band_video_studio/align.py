@@ -72,14 +72,14 @@ def align(video_source: str, ref_audio: str, progress=None) -> dict:
     reference fits before the video ends.
     """
     if progress:
-        progress("decoding audio")
+        progress("decoding audio", pct=10)
     video_samples = probe.extract_audio(video_source)
     ref_samples = probe.extract_audio(ref_audio)
     if len(video_samples) == 0 or len(ref_samples) == 0:
         raise RuntimeError("could not decode audio from the video or the reference file")
 
     if progress:
-        progress("matching onset envelopes")
+        progress("matching onset envelopes", pct=50)
     _, video_env = onset_envelope(video_samples, probe.AUDIO_SR)
     _, ref_env = onset_envelope(ref_samples, probe.AUDIO_SR)
     if len(ref_env) > len(video_env):

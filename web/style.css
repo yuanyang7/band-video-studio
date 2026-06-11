@@ -31,8 +31,27 @@ label { display: block; margin: 4px 0; }
 }
 #video-list li.active { background: #2d3b63; }
 #job-status { font-size: 12px; color: #f6c343; min-height: 18px; }
+#job-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#job-bar-wrap {
+  margin-top: 4px; height: 6px; background: #2a2d35; border-radius: 3px;
+  overflow: hidden;
+}
+#job-bar {
+  height: 100%; width: 0%; border-radius: 3px;
+  background: linear-gradient(90deg, #3b6ef6, #6db3f2);
+  transition: width 0.4s ease;
+}
 
-#main { flex: 1; padding: 16px; min-width: 0; }
+#main, #library-view { flex: 1; padding: 16px; min-width: 0; }
+
+#lib-folders { list-style: none; margin: 6px 0; padding: 0; }
+#lib-folders li {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: 6px; margin-bottom: 3px; background: #22242c; font-size: 12px;
+}
+#lib-folders .lib-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
+#lib-folders .del { color: #ff7a8a; cursor: pointer; }
+.lib-video { color: #8a8f9c; font-size: 12px; margin-left: 6px; }
 #player { width: 100%; max-height: 48vh; background: #000; border-radius: 8px; }
 #timeline { width: 100%; display: block; margin-top: 6px; border-radius: 6px; background: #1f2128; cursor: pointer; }
 #legend { margin: 6px 0 14px; }
@@ -40,6 +59,7 @@ label { display: block; margin: 4px 0; }
 .chip.song { background: #1d4d35; color: #6fe0a8; }
 .chip.highlight { background: #54430f; color: #f6c343; }
 .chip.instrumental { background: #3a2f5a; color: #9b7be0; }
+.chip.singing { background: #143d3d; color: #4dc4c4; }
 .chip.fun { background: #5a1f28; color: #ff7a8a; }
 .chip.lyric { background: #1f3a5a; color: #6db3f2; }
 
@@ -54,6 +74,27 @@ label { display: block; margin: 4px 0; }
 
 #crop-wrap { position: relative; margin-top: 8px; }
 #crop-canvas { width: 100%; border-radius: 6px; cursor: crosshair; display: block; }
-#crop-list li { display: flex; justify-content: space-between; cursor: default; }
+#crop-list li { display: flex; justify-content: space-between; align-items: center; cursor: default; }
+#crop-list .crop-tools { display: flex; gap: 8px; align-items: center; }
+#crop-list select.role { width: auto; padding: 2px 6px; font-size: 12px; }
 #crop-list .del { color: #ff7a8a; cursor: pointer; }
 .miss { opacity: .45; }
+
+/* standalone export panel — independent of the workflow panels above */
+#export-panel { margin-top: 14px; border-color: #3b6ef6; }
+#export-panel h2 { color: #6db3f2; }
+#export-panel .row label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+
+/* two-track audition mixer (sync panel) */
+#track-mixer { margin-top: 10px; }
+#track-mixer .track { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.trk {
+  background: #22242c; color: #8a8f9c; border: 1px solid #33363f;
+  min-width: 130px; text-align: left;
+}
+.trk:hover { background: #2b2e38; }
+.trk.on { background: #2d3b63; color: #e8e8ea; border-color: #3b6ef6; }
+.trk-bar { flex: 1; height: 14px; background: #1f2128; border-radius: 4px; position: relative; overflow: hidden; }
+.trk-span { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; }
+.trk-span.rec { background: #3b6ef6; }
+.trk-span.cam { left: 0; width: 100%; background: #3a3d47; }

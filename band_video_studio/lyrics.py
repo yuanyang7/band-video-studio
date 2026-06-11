@@ -24,12 +24,12 @@ def transcribe_words(source: str, start: float, end: float, progress=None) -> li
     from . import probe
 
     if progress:
-        progress("loading whisper model")
+        progress("loading whisper model", pct=10)
     model = WhisperModel("small", device="cpu", compute_type="int8")
     samples = probe.extract_audio(source, start=start, duration=end - start)
 
     if progress:
-        progress("transcribing")
+        progress("transcribing", pct=40)
     segments, _ = model.transcribe(samples, word_timestamps=True, vad_filter=True)
     words = []
     for segment in segments:

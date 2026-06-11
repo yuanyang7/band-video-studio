@@ -90,6 +90,51 @@ class FaceScanner:
         return faces
 
 
+def detect_face_boxes(source: str, t: float, height: int = FRAME_HEIGHT) -> list[dict]:
+    """Detect faces at time t, returning normalized (0..1) bounding boxes.
+
+    Each dict has {x, y, w, h, cx, cy} in normalized coords relative to
+    the full frame. Lightweight — YuNet only, no blendshapes.
+    """
+    import cv2
+
+    jpeg = probe.extract_frame_jpeg(source, t, height=height)
+    img = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        return []
+    ih, iw = img.shape[:2]
+    detector = cv2.FaceDetectorYN.create(
+        str(model_path("yunet.onnx")), "", (iw, ih), score_threshold=0.5,
+    )
+    _, boxes = detector.detect(img)
+    faces = []
+    for box in boxes if boxes is not None else []:
+        bx, by, bw, bh = (float(v) for v in box[:4])
+        faces.append({
+            "x": bx / iw, "y": by / ih, "w": bw / iw, "h": bh / ih,
+            "cx": (bx + bw / 2) / iw, "cy": (by + bh / 2) / ih,
+        })
+    return faces
+
+
+def assign_faces_to_views(
+    faces: list[dict], crops: dict[str, dict],
+) -> dict[str, list[dict]]:
+    """Map each detected face to the view whose crop center is nearest."""
+    assigned: dict[str, list[dict]] = {v: [] for v in crops}
+    for face in faces:
+        best_view, best_dist = None, float("inf")
+        for name, box in crops.items():
+            vcx = box["x"] + box["w"] / 2
+            vcy = box["y"] + box["h"] / 2
+            dist = (face["cx"] - vcx) ** 2 + (face["cy"] - vcy) ** 2
+            if dist < best_dist:
+                best_view, best_dist = name, dist
+        if best_view:
+            assigned[best_view].append(face)
+    return assigned
+
+
 def scan_window(scanner: FaceScanner, source: str, start: float, end: float, interval: float = 1.5) -> dict:
     """Sample frames in a window; return best smile evidence found."""
     best = {"t": start, "smiling_faces": 0, "laughing_faces": 0, "max_smile": 0.0}
@@ -172,7 +217,7 @@ def find_fun_moments(
         laughs = audio_result.get("laughs", [])
         for i, laugh in enumerate(laughs):
             if progress:
-                progress(f"confirming laugh {i + 1}/{len(laughs)}")
+                progress(f"confirming laugh {i + 1}/{len(laughs)}", pct=int((i / max(len(laughs), 1)) * 40))
             start = max(0.0, laugh["start"] - 2.0)
             end = min(duration, laugh["end"] + 3.0)
             visual = scan_window(scanner, source, start, end)
@@ -191,7 +236,7 @@ def find_fun_moments(
             t = 0.0
             while t < duration:
                 if progress:
-                    progress(f"smile sweep {int(t / step) + 1}/{total}")
+                    progress(f"smile sweep {int(t / step) + 1}/{total}", pct=40 + int((t / max(duration, 1)) * 60))
                 window_end = min(t + step, duration)
                 covered = any(m["start"] <= t <= m["end"] for m in moments)
                 if not covered:

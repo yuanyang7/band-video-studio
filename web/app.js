@@ -20,18 +20,27 @@ const safe = (fn) => async (...args) => {
 /* ---------------------------------------------------------------- jobs */
 
 async function watchJob(jobId, then) {
-  const el = $("job-status");
+  const text = $("job-text");
+  const barWrap = $("job-bar-wrap");
+  const bar = $("job-bar");
   const poll = async () => {
     const job = await api(`/jobs/${jobId}`);
     if (job.status === "running") {
-      el.textContent = `⏳ ${job.kind}: ${job.progress || "working"}…`;
+      text.textContent = `⏳ ${job.kind}: ${job.progress || "working"}…`;
+      if (job.pct != null) {
+        barWrap.hidden = false;
+        bar.style.width = `${job.pct}%`;
+      }
       setTimeout(poll, 1500);
     } else if (job.status === "done") {
-      el.textContent = `✅ ${job.kind} done`;
-      setTimeout(() => (el.textContent = ""), 4000);
+      text.textContent = `✅ ${job.kind} done`;
+      bar.style.width = "100%";
+      setTimeout(() => { text.textContent = ""; barWrap.hidden = true; bar.style.width = "0%"; }, 4000);
       then && then(job);
     } else {
-      el.textContent = `❌ ${job.kind} failed`;
+      text.textContent = `❌ ${job.kind} failed`;
+      barWrap.hidden = true;
+      bar.style.width = "0%";
       console.error(job.error);
       alert(`${job.kind} failed:\n` + job.error.split("\n")[0]);
     }
@@ -58,6 +67,7 @@ async function openVideo(id) {
   current = await api(`/videos/${id}`);
   crops = current.crops || {};
   sel = null;
+  $("library-view").hidden = true;
   $("main").hidden = false;
   if (current.has_proxy) $("player").src = `/api/videos/${id}/stream`;
   $("lyrics-avail").textContent = current.capabilities.lyrics ? "" : "(install: uv sync --extra lyrics)";
@@ -68,6 +78,7 @@ async function openVideo(id) {
   refreshExports();
   renderLyrics();
   renderSync();
+  setupMixer();
 }
 
 $("register-btn").onclick = safe(async () => {
@@ -84,12 +95,86 @@ $("upload-file").onchange = async () => {
   if (!file) return;
   const form = new FormData();
   form.append("file", file);
-  $("job-status").textContent = "⏳ uploading…";
+  $("job-text").textContent = "⏳ uploading…";
   const res = await fetch("/api/videos/upload", { method: "POST", body: form });
   const { video, job } = await res.json();
   watchJob(job, () => openVideo(video.id));
   refreshList();
 };
+
+/* -------------------------------------------------------------- library */
+
+async function refreshLibrary() {
+  const lib = await api("/library");
+  const ul = $("lib-folders");
+  ul.innerHTML = "";
+  for (const folder of lib.folders) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="lib-path" title="${folder}">${folder}</span><span class="del" title="remove">✕</span>`;
+    li.querySelector(".del").onclick = safe(async () => {
+      await post("/library/folders/remove", { path: folder });
+      refreshLibrary();
+    });
+    ul.appendChild(li);
+  }
+}
+
+$("lib-add").onclick = safe(async () => {
+  const path = $("lib-folder").value.trim();
+  if (!path) return;
+  await post("/library/folders", { path });
+  $("lib-folder").value = "";
+  refreshLibrary();
+});
+
+$("lib-scan").onclick = safe(async () => {
+  const limit = parseInt($("lib-limit").value, 10);
+  const job = await post("/library/scan", { limit: isNaN(limit) ? null : limit });
+  watchJob(job.id, (done) => {
+    const r = done.result || {};
+    const extra = [
+      r.failed && r.failed.length ? `${r.failed.length} skipped` : "",
+      r.remaining ? `${r.remaining} left for the next scan` : "",
+    ].filter(Boolean).join(", ");
+    $("job-text").textContent = `✅ scan: ${(r.imported || []).length} imported${extra ? ` (${extra})` : ""}`;
+    if (r.failed && r.failed.length) console.warn("library scan skipped files:", r.failed);
+    setTimeout(() => ($("job-text").textContent = ""), 8000);
+    refreshList();
+  });
+});
+
+function openMomentAt(videoId, t) {
+  return safe(async () => {
+    await openVideo(videoId);
+    const p = $("player");
+    const seek = () => { p.currentTime = t; p.play().catch(() => {}); };
+    if (p.readyState >= 1) seek();
+    else p.addEventListener("loadedmetadata", seek, { once: true });
+  })();
+}
+
+$("lib-best").onclick = safe(async () => {
+  const best = await api("/library/best");
+  const fill = (ulId, items, label) => {
+    const ul = $(ulId);
+    ul.innerHTML = "";
+    if (!items.length) {
+      ul.innerHTML = `<li class="miss">nothing yet — analyze some videos first</li>`;
+      return;
+    }
+    for (const m of items) {
+      const li = document.createElement("li");
+      const caption = m.caption || (m.type === "laughter" ? "laughter heard" : "smiles spotted");
+      li.innerHTML = `<span class="t">${fmt(m.start)}</span>😄 ${caption} ${label(m)} <span class="lib-video">${m.video_name}</span>`;
+      li.onclick = () => openMomentAt(m.video_id, m.start);
+      ul.appendChild(li);
+    }
+  };
+  fill("best-fun", best.fun, (m) => `(score ${m.score})`);
+  fill("best-expr", best.expressions, (m) => `(smile ${m.max_smile})`);
+  $("main").hidden = true;
+  $("library-view").hidden = false;
+});
 
 /* ------------------------------------------------------------ timeline */
 
@@ -118,6 +203,8 @@ function drawTimeline() {
       if (h.kind !== "instrumental") continue;
       ctx.fillRect(x(h.start), 32, Math.max(2, x(h.end) - x(h.start)), 8);
     }
+    ctx.fillStyle = "#4dc4c4";
+    for (const s of a.vocal_segments || []) ctx.fillRect(x(s.start), 26, Math.max(2, x(s.end) - x(s.start)), 4);
     ctx.fillStyle = "#ff7a8a";
     for (const m of a.fun_moments || []) {
       const cx = x((m.start + m.end) / 2);
@@ -280,6 +367,30 @@ $("grab-frame").onclick = async () => {
   frameImg.src = `/api/videos/${current.id}/frame?t=${t}&_=${Date.now()}`;
 };
 
+function effectiveCrop(b) {
+  const orient = $("edit-orientation").value;
+  const presets = {
+    horizontal: [1920,1080], horizontal_2k: [2560,1440], horizontal_4k: [3840,2160],
+    vertical: [1080,1920], vertical_2k: [1440,2560], vertical_4k: [2160,3840],
+  };
+  const [outW, outH] = presets[orient] || [1920, 1080];
+  const tgt = outW / outH;
+  const maxUp = parseFloat($("max-upscale").value) || 2;
+  const cw = cropCanvas.width, ch = cropCanvas.height;
+  let w = Math.max(b.w * cw, 16), h = Math.max(b.h * ch, 16);
+  let cx = b.x * cw + w / 2, cy = b.y * ch + h / 2;
+  if (w / h > tgt) h = w / tgt; else w = h * tgt;
+  const srcW = current ? current.meta.width : cw;
+  const srcH = current ? current.meta.height : ch;
+  const scale = cw / srcW;
+  const minW = (outW / maxUp) * scale, minH = (outH / maxUp) * scale;
+  if (w < minW || h < minH) { const g = Math.max(minW / w, minH / h); w *= g; h *= g; }
+  const s = Math.min(1, cw / w, ch / h); w *= s; h *= s;
+  const x = Math.min(Math.max(cx - w / 2, 0), cw - w);
+  const y = Math.min(Math.max(cy - h / 2, 0), ch - h);
+  return { x, y, w, h };
+}
+
 function drawCrops() {
   if (!frameImg) return;
   const ctx = cropCanvas.getContext("2d");
@@ -287,10 +398,17 @@ function drawCrops() {
   ctx.lineWidth = 3;
   ctx.font = "16px sans-serif";
   for (const [name, b] of Object.entries(crops)) {
+    // user-drawn box
     ctx.strokeStyle = "#3b6ef6";
     ctx.strokeRect(b.x * cropCanvas.width, b.y * cropCanvas.height, b.w * cropCanvas.width, b.h * cropCanvas.height);
     ctx.fillStyle = "#3b6ef6";
     ctx.fillText(name, b.x * cropCanvas.width + 4, b.y * cropCanvas.height + 18);
+    // effective output crop (dashed)
+    const ec = effectiveCrop(b);
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "#f6c343";
+    ctx.strokeRect(ec.x, ec.y, ec.w, ec.h);
+    ctx.setLineDash([]);
   }
   if (dragBox) {
     ctx.strokeStyle = "#f6c343";
@@ -335,7 +453,21 @@ function renderCropList() {
   ul.innerHTML = "";
   for (const name of Object.keys(crops)) {
     const li = document.createElement("li");
-    li.innerHTML = `<span>${name}</span><span class="del" title="remove">✕</span>`;
+    li.innerHTML = `<span>${name}</span>
+      <span class="crop-tools">
+        <select class="role" title="role: singer views get the cut when the vocal comes in; wide views return regularly">
+          <option value="">auto</option>
+          <option value="singer">singer</option>
+          <option value="wide">wide / all</option>
+        </select>
+        <span class="del" title="remove">✕</span>
+      </span>`;
+    const roleSel = li.querySelector(".role");
+    roleSel.value = crops[name].role || "";
+    roleSel.onchange = () => {
+      if (roleSel.value) crops[name].role = roleSel.value;
+      else delete crops[name].role;
+    };
     li.querySelector(".del").onclick = () => { delete crops[name]; renderCropList(); drawCrops(); };
     ul.appendChild(li);
   }
@@ -347,16 +479,22 @@ $("save-crops").onclick = async () => {
     method: "PUT", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ crops }),
   });
-  $("job-status").textContent = "✅ crops saved";
-  setTimeout(() => ($("job-status").textContent = ""), 3000);
+  $("job-text").textContent = "✅ crops saved";
+  setTimeout(() => ($("job-text").textContent = ""), 3000);
 };
+
+$("max-upscale").oninput = () => {
+  $("max-upscale-val").textContent = parseFloat($("max-upscale").value).toFixed(1);
+  drawCrops();
+};
+$("edit-orientation").onchange = () => drawCrops();
 
 /* -------------------------------------------------------------- export */
 
 $("export-btn").onclick = safe(async () => {
   if (!current) return;
   if (!Object.keys(crops).length) {
-    alert("Draw and save at least one player crop first (Player crops panel).");
+    alert("Set up at least one camera first (Shooting simulation panel).");
     return;
   }
   const start = parseFloat($("edit-start").value), end = parseFloat($("edit-end").value);
@@ -371,6 +509,10 @@ $("export-btn").onclick = safe(async () => {
     smart: $("opt-smart").checked,
     camera_motion: $("opt-motion").checked,
     transitions: $("opt-transitions").checked,
+    sharpen: $("opt-sharpen").checked,
+    denoise: $("opt-denoise").checked,
+    max_upscale: parseFloat($("max-upscale").value) || 2,
+    name: $("export-name").value.trim() || null,
   });
   watchJob(job.id, refreshExports);
 });
@@ -396,7 +538,7 @@ function renderSync() {
   if (!s) return;
   const weak = s.confidence < 0.25 ? " ⚠️ weak match" : "";
   const span = document.createElement("span");
-  span.textContent = `✅ ${s.file} @ ${fmt(s.offset)}–${fmt(s.offset + s.duration)} (match ${s.confidence})${weak}. Render edit will use this audio.`;
+  span.textContent = `✅ ${s.file} @ ${fmt(s.offset)}–${fmt(s.offset + s.duration)} (match ${s.confidence})${weak}. Export will use this audio.`;
   const useBtn = document.createElement("button");
   useBtn.textContent = "set range";
   useBtn.onclick = () => setSelection(s.offset, s.offset + s.duration);
@@ -415,7 +557,7 @@ $("sync-btn").onclick = safe(async () => {
   if (!file) { alert("Choose an audio recording first."); return; }
   const form = new FormData();
   form.append("file", file);
-  $("job-status").textContent = "⏳ uploading recording…";
+  $("job-text").textContent = "⏳ uploading recording…";
   const res = await fetch(`/api/videos/${current.id}/sync-audio`, { method: "POST", body: form });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
   const job = await res.json();
@@ -428,6 +570,64 @@ $("sync-btn").onclick = safe(async () => {
     }
   });
 });
+
+/* ----------------------------------------------- two-track audition mixer
+   After an alignment exists, the video player and a hidden <audio> with the
+   clean recording play as two layered tracks (like a video editor): toggle
+   either to compare the camera audio with the aligned recording. */
+
+let refAudio = null;
+let recOn = true, camOn = false;
+
+function setupMixer() {
+  const wrap = $("track-mixer");
+  if (refAudio) { refAudio.pause(); refAudio.removeAttribute("src"); refAudio = null; }
+  const s = current && current.sync;
+  if (!s || !s.ref_path) {
+    wrap.hidden = true;
+    $("player").muted = false;
+    return;
+  }
+  wrap.hidden = false;
+  refAudio = new Audio(`/api/videos/${current.id}/sync-audio/file`);
+  refAudio.preload = "auto";
+  // default mirrors the export: recording audible, camera muted
+  recOn = true; camOn = false;
+  applyMix();
+  // show where the aligned recording sits on the video's timeline
+  const dur = current.meta.duration || 1;
+  const bar = $("rec-span");
+  bar.style.left = `${(s.offset / dur) * 100}%`;
+  bar.style.width = `${Math.min(100, (s.duration / dur) * 100)}%`;
+}
+
+function applyMix() {
+  $("player").muted = !camOn;
+  if (refAudio) refAudio.muted = !recOn;
+  $("trk-rec").classList.toggle("on", recOn);
+  $("trk-cam").classList.toggle("on", camOn);
+}
+
+$("trk-rec").onclick = () => { recOn = !recOn; applyMix(); };
+$("trk-cam").onclick = () => { camOn = !camOn; applyMix(); };
+
+function syncRefAudio() {
+  if (!refAudio || !current || !current.sync) return;
+  const p = $("player");
+  const t = p.currentTime - current.sync.offset; // video time -> recording time
+  if (t >= 0 && t <= current.sync.duration) {
+    if (Math.abs(refAudio.currentTime - t) > 0.15) refAudio.currentTime = t;
+    refAudio.playbackRate = p.playbackRate;
+    if (!p.paused && refAudio.paused) refAudio.play().catch(() => {});
+    if (p.paused && !refAudio.paused) refAudio.pause();
+  } else if (!refAudio.paused) {
+    refAudio.pause(); // playhead is outside the aligned span
+  }
+}
+
+for (const ev of ["play", "pause", "seeked", "timeupdate", "ratechange"]) {
+  $("player").addEventListener(ev, syncRefAudio);
+}
 
 /* -------------------------------------------------------------- lyrics */
 
@@ -461,3 +661,4 @@ function renderLyrics() {
 }
 
 refreshList();
+refreshLibrary();
