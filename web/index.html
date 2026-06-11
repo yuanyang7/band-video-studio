@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Band Video Studio</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside id="sidebar">
+  <h1>🎸 Band Video Studio</h1>
+  <section>
+    <h2>Add video</h2>
+    <input type="file" id="upload-file" accept="video/*">
+    <div class="row">
+      <input type="text" id="register-path" placeholder="…or local file path (no copy)">
+      <button id="register-btn">Add</button>
+    </div>
+  </section>
+  <section>
+    <h2>Videos</h2>
+    <ul id="video-list"></ul>
+  </section>
+  <div id="job-status"></div>
+</aside>
+
+<main id="main" hidden>
+  <video id="player" controls></video>
+  <canvas id="timeline" height="64"></canvas>
+  <div id="legend">
+    <span class="chip song">song</span>
+    <span class="chip highlight">highlight</span>
+    <span class="chip fun">fun</span>
+    <span class="chip lyric">lyric line</span>
+  </div>
+
+  <div id="panels">
+    <section class="panel">
+      <h2>Analyze</h2>
+      <label><input type="checkbox" id="opt-fun" checked> fun-moment detection (local, free)</label>
+      <label><input type="checkbox" id="opt-sweep" checked> sweep chat sections for smiles</label>
+      <label><input type="checkbox" id="opt-claude"> Claude deep pass on candidates (API cost)</label>
+      <button id="analyze-btn">Run analysis</button>
+      <div id="analysis-summary"></div>
+      <ul id="moments"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Player crops</h2>
+      <p class="hint">Grab a frame, drag a box per player, name it. Used for the auto edit.</p>
+      <button id="grab-frame">Grab frame at playhead</button>
+      <div id="crop-wrap"><canvas id="crop-canvas"></canvas></div>
+      <ul id="crop-list"></ul>
+      <button id="save-crops">Save crops</button>
+    </section>
+
+    <section class="panel">
+      <h2>Export edit</h2>
+      <div class="row">
+        <label>start <input type="number" id="edit-start" step="0.1" min="0"></label>
+        <label>end <input type="number" id="edit-end" step="0.1" min="0"></label>
+      </div>
+      <div class="row">
+        <label>switch every <input type="number" id="edit-switch" value="4" step="0.5" min="1"> s</label>
+        <select id="edit-orientation">
+          <option value="horizontal">horizontal 16:9</option>
+          <option value="vertical">vertical 9:16</option>
+        </select>
+      </div>
+      <button id="export-btn">Render edit</button>
+      <ul id="exports"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Lyrics match <span id="lyrics-avail" class="hint"></span></h2>
+      <input type="text" id="lyrics-song" placeholder="song name">
+      <textarea id="lyrics-text" rows="6" placeholder="paste lyrics, one line per row"></textarea>
+      <p class="hint">Uses the start/end fields above as the song range.</p>
+      <button id="lyrics-btn">Match lyrics</button>
+      <ul id="lyrics-lines"></ul>
+    </section>
+  </div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
