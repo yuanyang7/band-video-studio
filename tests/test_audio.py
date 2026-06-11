@@ -6,6 +6,7 @@ from band_video_studio.audio import (
     estimate_tempo,
     find_highlights,
     find_laughs,
+    find_vocal_segments,
     onset_envelope,
     segments_from_scores,
 )
@@ -83,3 +84,16 @@ def test_find_highlights_peak_inside_song():
     assert len(highlights) >= 1
     h = highlights[0]
     assert 44 <= h["start"] <= 52 and h["end"] >= 55
+
+
+def test_find_vocal_segments():
+    times = np.arange(0, 60, 1.0)
+    vocals = np.zeros_like(times)
+    vocals[10:30] = 0.5   # a sung verse
+    vocals[45:46] = 0.5   # a one-second blip: too short to count
+    segs = find_vocal_segments(times, vocals)
+    assert len(segs) == 1
+    s = segs[0]
+    # smoothing blurs edges a little; the segment should cover the sung stretch
+    assert 7.0 <= s["start"] <= 13.0
+    assert 27.0 <= s["end"] <= 33.0

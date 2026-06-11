@@ -299,6 +299,22 @@ def detect_beats(
     return beats, round(tempo, 1)
 
 
+def find_vocal_segments(
+    times: np.ndarray,
+    vocals: np.ndarray,
+    on_threshold: float = 0.2,
+    off_threshold: float = 0.1,
+    min_len_s: float = 2.0,
+    merge_gap_s: float = 3.0,
+) -> list[dict]:
+    """Stretches where someone is singing. Segment starts double as 'the singer
+    just came in' cues for the auto edit to cut to the singer view."""
+    segs = segments_from_scores(
+        times, smooth(vocals, 5), on_threshold, off_threshold, min_len_s, merge_gap_s
+    )
+    return [{"start": round(s, 2), "end": round(e, 2)} for s, e in segs]
+
+
 def find_laughs(
     times: np.ndarray,
     laugh_scores: np.ndarray,
@@ -325,13 +341,15 @@ def analyze(source: str, progress=None) -> dict:
         progress("decoding audio")
     samples = probe.extract_audio(source)
     if len(samples) == 0:
-        return {"songs": [], "highlights": [], "laughs": [], "beats": [], "tempo": 0.0, "windows": []}
+        return {"songs": [], "highlights": [], "laughs": [], "vocal_segments": [],
+                "beats": [], "tempo": 0.0, "windows": []}
 
     if progress:
         progress("classifying audio (YAMNet)")
     windows = classify_audio(samples, probe.AUDIO_SR)
     if not windows:
-        return {"songs": [], "highlights": [], "laughs": [], "beats": [], "tempo": 0.0, "windows": []}
+        return {"songs": [], "highlights": [], "laughs": [], "vocal_segments": [],
+                "beats": [], "tempo": 0.0, "windows": []}
 
     times = np.array([w["t"] for w in windows])
     music = smooth(np.array([w["music"] for w in windows]), 7)
@@ -357,6 +375,7 @@ def analyze(source: str, progress=None) -> dict:
             + find_instrumental_sections(times, vocals, music, songs)
         ),
         "laughs": find_laughs(times, laugh),
+        "vocal_segments": find_vocal_segments(times, vocals),
         "beats": beats,
         "tempo": tempo,
         "windows": windows,
