@@ -92,6 +92,14 @@ def _activity_at(activity: dict, view: str, t: float) -> float:
     return float(np.interp(t, times, z, left=z[0], right=z[-1]))
 
 
+def _track_at(track, t: float) -> float:
+    """Interpolated value of a (times, values) track at time t (0 if unknown)."""
+    if not track or not track[0]:
+        return 0.0
+    times, values = track
+    return float(np.interp(t, times, values, left=values[0], right=values[-1]))
+
+
 def build_smart_cutlist(
     views: list[str],
     start: float,
@@ -102,18 +110,31 @@ def build_smart_cutlist(
     events: list[dict] | None = None,
     activity: dict | None = None,
     pano_views: set[str] | None = None,
+    singer_views: set[str] | None = None,
+    vocal_track: tuple[list[float], list[float]] | None = None,
+    centers: dict[str, float] | None = None,
     seed: int | None = None,
     w_motion: float = 1.0,
     w_audio: float = 1.5,
+    w_vocal: float = 1.2,
+    w_center: float = 0.35,
+    w_wide: float = 1.2,
     even_weight: float = 1.0,
+    wide_refresh: float = 3.0,
 ) -> list[dict]:
     """Content-aware, beat-aligned cut list that still spreads views evenly.
 
     Boundaries step ~switch_s but snap to the nearest beat (kept within
     [0.6x, 1.8x] switch_s so it stays musical *and* even). Each segment goes to
-    the view scoring highest on a fusion of per-view motion (activity z-score),
-    audio-event routing (peaks -> soloist, fun -> pano/room), and an evenness
-    penalty for views that already had more than their fair share of screen time.
+    the view scoring highest on a fusion of:
+      - per-view motion (activity z-score),
+      - audio-event routing (peaks -> soloist, fun -> pano/room,
+        vocal entrances and sustained singing -> singer views),
+      - a small bonus for views framed near the centre of the stage,
+      - a "wide refresh" bonus so a pano/group view returns every
+        ~wide_refresh * switch_s seconds (keeps the whole band in the story),
+      - an evenness penalty for views that already had more than their fair
+        share of screen time.
     """
     if not views:
         raise ValueError("need at least one view")
@@ -122,11 +143,14 @@ def build_smart_cutlist(
     events = events or []
     activity = activity or {}
     pano_views = pano_views or set()
+    singer_views = singer_views or set()
+    centers = centers or {}
     min_len, max_len = 0.6 * switch_s, 1.8 * switch_s
 
     cuts: list[dict] = []
     screen_time = {v: 0.0 for v in views}
     t, prev = start, None
+    last_wide = start
     while t < end - 1e-3:
         lo, hi = min(t + min_len, end), min(t + max_len, end)
         cut_end = _snap_boundary(t + switch_s, lo, hi, beats)
@@ -137,6 +161,8 @@ def build_smart_cutlist(
         overlapping = [e for e in events if e["start"] < cut_end and e["end"] > t]
         elapsed = max(1e-6, t - start)
         fair = elapsed / len(views)
+        vocal_level = _track_at(vocal_track, mid)
+        wide_due = pano_views and (t - last_wide) >= wide_refresh * switch_s
 
         choices = [v for v in views if v != prev] or views
         best_view, best_score, best_reason = choices[0], -1e9, "motion"
@@ -145,13 +171,26 @@ def build_smart_cutlist(
         for v in choices:
             score = w_motion * _activity_at(activity, v, mid)
             reason = "motion"
+            if v in singer_views and vocal_level > 0.12:
+                # someone is singing right now — favour the singer, more so the
+                # stronger (more emotive) the vocal is
+                score += w_vocal * min(1.0, vocal_level / 0.4)
+                reason = "vocals->singer"
             for e in overlapping:
-                if e["type"] == "fun" and v in pano_views:
+                if e["type"] == "vocal_start" and v in singer_views:
+                    score += w_audio  # the singer just came in — cut to them
+                    reason = "vocal-start->singer"
+                elif e["type"] == "fun" and v in pano_views:
                     score += w_audio
                     reason = "fun->pano"
                 elif e["type"] in ("peak", "instrumental") and v == most_active:
                     score += w_audio
                     reason = f"{e['type']}->soloist"
+            if v in centers:
+                score += w_center * (1.0 - 2.0 * abs(centers[v] - 0.5))
+            if wide_due and v in pano_views:
+                score += w_wide
+                reason = "wide-refresh"
             score -= even_weight * max(0.0, screen_time[v] - fair) / switch_s
             score += rng.uniform(0, 1e-3)  # deterministic tie-break
             if score > best_score:
@@ -160,6 +199,8 @@ def build_smart_cutlist(
         cuts.append({"start": round(t, 3), "end": round(cut_end, 3),
                      "view": best_view, "reason": best_reason})
         screen_time[best_view] += cut_end - t
+        if best_view in pano_views:
+            last_wide = cut_end
         prev, t = best_view, cut_end
     return cuts
 
