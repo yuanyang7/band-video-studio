@@ -6,12 +6,16 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
-    "numpy>=2.0",
-    "anthropic>=0.50",
+    "numpy>=1.26",
+    "mediapipe>=0.10.14",
     "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
+# Optional Claude-vision deep pass for nuanced fun-moment detection
+claude = [
+    "anthropic>=0.50",
+]
 lyrics = [
     "faster-whisper>=1.0",
 ]
