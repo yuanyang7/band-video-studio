@@ -4,16 +4,18 @@ Interactive app for analyzing and auto-editing band rehearsal videos (fixed-came
 
 ## What it does
 
-**Analysis — free, local models by default (no API calls)**
+**Analysis — free, local models by default (no API calls). Runs automatically on import; re-detect any time from the UI.**
 - **Song detection** — YAMNet audio classification finds sustained music segments → start/end of each song rehearsal.
 - **Highlights** — energy peaks within songs (solos, big moments).
+- **Singing detection** — YAMNet vocal classes mark sung stretches; entrances drive the auto edit's cut to the singer.
 - **Fun moments** — YAMNet laughter detection fused with MediaPipe face-blendshape smile detection on sampled frames, plus a sparse smile sweep over chat sections. Results land on an interactive timeline; click a marker to jump there.
 - **Claude deep pass** *(optional, opt-in, costs API tokens)* — sends only the pre-filtered candidate windows (a handful of small frames each) to Claude vision for a verdict + clip caption, e.g. "funny reaction to a flubbed note". Never scans the whole video.
 
 **Editing**
-- **Lyrics matching** *(optional, local whisper)* — give it a song name + lyrics, it transcribes and aligns lyric lines to timestamps.
-- **Multicam-style auto edit** — define a crop region per player on the fixed wide shot, and it cuts a song into a view-switching edit (horizontal 16:9 or vertical 9:16), rendered from the original file so 4K detail survives the crop.
-- **Sync to recording** — upload a clean, separately-recorded take of a song that plays in the video; onset-envelope cross-correlation locates *where* in the video that take sits and shows the match for review. When an alignment exists, **Render edit** crops the aligned span and replaces the camera audio with your recording (original muted). Fully local, no API.
+- **Sync to recording** — upload a clean, separately-recorded take of a song that plays in the video; onset-envelope cross-correlation locates *where* in the video that take sits. Audition the result with a two-track mixer (camera audio vs. aligned recording, toggle either) before exporting. When an alignment exists, **Export** crops the aligned span and replaces the camera audio with your recording (original muted). Fully local, no API.
+- **Shooting simulation** — define a virtual camera (crop region) per player on the fixed wide shot, optionally tagging one as *singer* and one as *wide*. The cut list switches between those cameras like a multicam shoot: to the singer when the vocal comes in (and while singing is strong), to the most active player on energy peaks/instrumentals, back to the wide view at a regular cadence, with a mild bias toward centre-stage framing and an evenness guarantee so every player gets screen time. Optional glide transitions connect the views instead of hard cuts.
+- **Export** — independent of the panels above: pick a range on the timeline, orientation (16:9 or 9:16), and an optional file name; rendered from the original file so 4K detail survives the crop.
+- **Lyrics matching** *(optional, local whisper, experimental)* — give it a song name + lyrics, it transcribes and aligns lyric lines to timestamps.
 
 ## Setup
 
@@ -36,11 +38,11 @@ uv run uvicorn band_video_studio.server:app --reload
 Open http://127.0.0.1:8000.
 
 Workflow in the UI:
-1. **Add video** — upload, or register a local file path (recommended for big 4K files; nothing is copied).
-2. **Analyze** — songs + highlights + fun moments; optionally tick the Claude deep pass.
-3. Browse the **timeline** — songs (green), highlights (amber), fun moments (red). Click to seek; click list items to jump; double-click a song to fill the export range.
-4. **Crops** — grab a frame, drag a box per player, save, then **Export edit**.
-5. **Sync to recording** *(optional)* — upload a clean recording of a song in the video; it aligns and fills the export range. Then **Render edit** uses that range and lays your recording on as the audio (original muted).
+1. **Add video** — upload, or register a local file path (recommended for big 4K files; nothing is copied). Detection runs automatically; **Re-detect** any time (e.g. to add the Claude deep pass).
+2. Browse the **timeline** — songs (green), highlights (amber), singing (teal), fun moments (red). Click to seek; click list items to jump; double-click a song to fill the export range.
+3. **Sync to recording** *(optional)* — upload a clean recording of a song in the video; it aligns, fills the export range, and shows a two-track mixer to audition camera audio vs. the recording.
+4. **Shooting simulation** — grab a frame, drag a virtual camera per player (tag singer/wide roles), save, tune the switching options.
+5. **Export** — pick range, orientation, and an optional file name. With an alignment present the recording becomes the soundtrack (camera muted).
 
 ## Architecture
 
@@ -48,7 +50,7 @@ Workflow in the UI:
 band_video_studio/
   probe.py    ffprobe metadata + proxy/audio/frame extraction (ffmpeg)
   models.py   download-and-cache for local MediaPipe model files
-  audio.py    YAMNet music/laugh classification + energy → songs, highlights, laugh candidates
+  audio.py    YAMNet music/laugh/vocal classification + energy → songs, highlights, singing, laugh candidates
   detect.py   face-blendshape smile detection + audio/visual fusion → fun moments
   vision.py   optional Claude deep pass on candidate windows only
   lyrics.py   optional faster-whisper transcription + lyric line alignment
