@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import align, audio, detect, editor, jobs, lyrics, probe, store, vision
+from . import align, audio, detect, editor, jobs, library, lyrics, probe, store, vision
 
 app = FastAPI(title="Band Video Studio")
 
@@ -384,6 +384,81 @@ def download_export(video_id: str, name: str):
     if not path.exists():
         raise HTTPException(404, "export not found")
     return FileResponse(path, media_type="video/mp4", filename=path.name)
+
+
+# ------------------------------------------------------------- 素材库 library
+
+class FolderBody(BaseModel):
+    path: str
+
+
+@app.get("/api/library")
+def get_library():
+    config = store.load_library()
+    return {"folders": config.get("folders", []), "videos": len(store.list_videos())}
+
+
+@app.post("/api/library/folders")
+def add_library_folder(body: FolderBody):
+    folder = Path(body.path).expanduser()
+    if not folder.is_dir():
+        raise HTTPException(400, f"not a folder: {folder}")
+    config = store.load_library()
+    if str(folder) not in config["folders"]:
+        config["folders"].append(str(folder))
+        store.save_library(config)
+    return get_library()
+
+
+@app.post("/api/library/folders/remove")
+def remove_library_folder(body: FolderBody):
+    config = store.load_library()
+    config["folders"] = [f for f in config["folders"] if f != body.path]
+    store.save_library(config)
+    return get_library()
+
+
+@app.post("/api/library/scan")
+def scan_library():
+    """Find new videos in the library folders and import them one at a time.
+
+    A single sequential job: each new file is registered, proxied and analyzed
+    before the next starts, so a big NAS folder doesn't fan out into dozens of
+    concurrent ffmpeg/model runs.
+    """
+    folders = store.load_library().get("folders", [])
+    if not folders:
+        raise HTTPException(400, "add a library folder first")
+
+    def run(progress=None):
+        existing = {v["source_path"] for v in store.list_videos()}
+        new_files = library.find_new(library.scan_folders(folders), existing)
+        imported = []
+        for i, path in enumerate(new_files):
+            label = f"{path.name} ({i + 1}/{len(new_files)})"
+            if progress:
+                progress(f"importing {label}")
+            meta = probe.probe(str(path))
+            video = store.add_video(str(path), path.name, meta)
+            _prepare(video, progress=lambda msg: progress and progress(f"{label}: {msg}"))
+            _run_analysis(video, AnalyzeBody(),
+                          progress=lambda msg: progress and progress(f"{label}: {msg}"))
+            imported.append(video["name"])
+        return {"scanned": len(folders), "new": len(new_files), "imported": imported}
+
+    return jobs.submit("library scan", run)
+
+
+@app.get("/api/library/best")
+def library_best(limit: int = 20):
+    """Cross-video best-of: funniest moments and most exaggerated expressions."""
+    items = [(v, store.load_artifact(v["id"], "analysis")) for v in store.list_videos()]
+    items = [(v, a) for v, a in items if a]
+    return {
+        "analyzed_videos": len(items),
+        "fun": library.top_fun_moments(items, limit),
+        "expressions": library.top_expressions(items, limit),
+    }
 
 
 # -------------------------------------------------------------------- jobs
