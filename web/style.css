@@ -39,6 +39,7 @@ label { display: block; margin: 4px 0; }
 .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; margin-right: 6px; }
 .chip.song { background: #1d4d35; color: #6fe0a8; }
 .chip.highlight { background: #54430f; color: #f6c343; }
+.chip.instrumental { background: #3a2f5a; color: #9b7be0; }
 .chip.fun { background: #5a1f28; color: #ff7a8a; }
 .chip.lyric { background: #1f3a5a; color: #6db3f2; }
 

@@ -30,6 +30,7 @@
   <div id="legend">
     <span class="chip song">song</span>
     <span class="chip highlight">highlight</span>
+    <span class="chip instrumental">instrumental</span>
     <span class="chip fun">fun</span>
     <span class="chip lyric">lyric line</span>
   </div>
@@ -63,14 +64,25 @@
         <button id="select-at-playhead" type="button">Select range at playhead</button>
       </div>
       <div class="row">
-        <label>switch every <input type="number" id="edit-switch" value="4" step="0.5" min="1"> s</label>
+        <label>switch ~every <input type="number" id="edit-switch" value="4" step="0.5" min="1"> s</label>
         <select id="edit-orientation">
           <option value="horizontal">horizontal 16:9</option>
           <option value="vertical">vertical 9:16</option>
         </select>
       </div>
+      <label><input type="checkbox" id="opt-smart" checked> smart switching (who's playing, beat-aligned)</label>
+      <label><input type="checkbox" id="opt-motion"> natural camera movement (drift / push-in / pano pan)</label>
+      <label><input type="checkbox" id="opt-transitions"> connecting transitions (glide between views)</label>
       <button id="export-btn">Render edit</button>
       <ul id="exports"></ul>
+    </section>
+
+    <section class="panel">
+      <h2>Sync to recording</h2>
+      <p class="hint">Upload a clean recording of a song played in this video to align it to the take. Review the match below; then <b>Render edit</b> crops the aligned span and uses this recording as the soundtrack (original muted).</p>
+      <input type="file" id="sync-file" accept="audio/*">
+      <button id="sync-btn">Align</button>
+      <div id="sync-result" class="hint"></div>
     </section>
 
     <section class="panel">

@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import audio, detect, editor, jobs, lyrics, probe, store, vision
+from . import align, audio, detect, editor, jobs, lyrics, probe, store, vision
 
 app = FastAPI(title="Band Video Studio")
 
@@ -76,6 +76,7 @@ def get_video(video_id: str):
         "analysis": store.load_artifact(video_id, "analysis"),
         "crops": store.load_artifact(video_id, "crops") or {},
         "lyrics": store.load_artifact(video_id, "lyrics"),
+        "sync": store.load_artifact(video_id, "sync"),
         "capabilities": {"claude": vision.available(), "lyrics": lyrics.available()},
     }
 
@@ -155,6 +156,48 @@ def lyrics_match(video_id: str, body: LyricsBody):
     return jobs.submit("lyrics", run)
 
 
+# --------------------------------------------------- sync to a recording
+
+@app.post("/api/videos/{video_id}/sync-audio")
+async def sync_audio(video_id: str, file: UploadFile):
+    """Upload a clean recording of a song played in the video and align it.
+
+    Only computes the alignment (offset/duration/confidence) for the UI to
+    review — the actual export is done by Render edit, which picks up this
+    alignment to crop the matching span and use the recording as its audio.
+    """
+    video = _video_or_404(video_id)
+    sync_dir = store.video_dir(video_id) / "sync"
+    sync_dir.mkdir(parents=True, exist_ok=True)
+    ref_path = sync_dir / Path(file.filename).name
+    with ref_path.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    def run(progress=None):
+        _prepare(video, progress)
+        # align on the proxy soundtrack (decodes far faster than the 4K source)
+        proxy = str(store.video_dir(video_id) / "proxy.mp4")
+        result = align.align(proxy, str(ref_path), progress=progress)
+        if result["duration"] <= 0:
+            raise RuntimeError("no overlap found — is this a recording of a song in this video?")
+        result["file"] = file.filename
+        result["ref_path"] = str(ref_path)
+        store.save_artifact(video_id, "sync", result)
+        return result
+
+    return jobs.submit("sync", run)
+
+
+@app.delete("/api/videos/{video_id}/sync-audio")
+def clear_sync(video_id: str):
+    """Forget the alignment so Render edit goes back to the original soundtrack."""
+    _video_or_404(video_id)
+    path = store.video_dir(video_id) / "sync.json"
+    if path.exists():
+        path.unlink()
+    return {"ok": True}
+
+
 # ----------------------------------------------------------------- editing
 
 class CropsBody(BaseModel):
@@ -172,9 +215,25 @@ class EditBody(BaseModel):
     start: float
     end: float
     orientation: str = "horizontal"  # or "vertical"
-    switch_s: float = 4.0
+    switch_s: float = 4.0            # target cadence (smart mode snaps it to beats)
     views: list[str] | None = None   # subset of crop names; default all
+    smart: bool = True               # content-aware, beat-aligned switching
+    camera_motion: bool = False      # subtle handheld drift / push-in / pano pan
+    transitions: bool = False        # glide between views (connects the scene)
     seed: int | None = None
+
+
+def _events_from_analysis(analysis: dict | None, start: float, end: float) -> list[dict]:
+    """Highlights/instrumentals/fun moments overlapping [start, end] as routing events."""
+    if not analysis:
+        return []
+    events: list[dict] = []
+    for h in analysis.get("highlights", []):
+        events.append({"start": h["start"], "end": h["end"],
+                       "type": "instrumental" if h.get("kind") == "instrumental" else "peak"})
+    for m in analysis.get("fun_moments", []):
+        events.append({"start": m["start"], "end": m["end"], "type": "fun"})
+    return [e for e in events if e["start"] < end and e["end"] > start]
 
 
 @app.post("/api/videos/{video_id}/edit")
@@ -188,15 +247,54 @@ def make_edit(video_id: str, body: EditBody):
         raise HTTPException(400, "orientation must be horizontal or vertical")
 
     def run(progress=None):
-        cuts = editor.build_cutlist(views, body.start, body.end, body.switch_s, body.seed)
+        analysis = store.load_artifact(video_id, "analysis")
+        out_w, out_h = editor.PRESETS[body.orientation]
+
+        # if a clean recording has been aligned to this video, use it as the
+        # soundtrack (muting the original) instead of the camera audio, and clamp
+        # the export to the span it actually covers so the audio never runs out
+        sync = store.load_artifact(video_id, "sync")
+        audio_source, audio_offset = None, 0.0
+        start, end = body.start, body.end
+        if sync and Path(sync.get("ref_path", "")).exists():
+            audio_source, audio_offset = sync["ref_path"], sync["offset"]
+            cover_start, cover_end = sync["offset"], sync["offset"] + sync["duration"]
+            start, end = max(start, cover_start), min(end, cover_end)
+            if end - start < 1.0:
+                raise RuntimeError(
+                    "export range falls outside the aligned recording "
+                    f"({cover_start:.1f}s–{cover_end:.1f}s)"
+                )
+
+        if body.smart:
+            proxy = str(store.video_dir(video_id) / "proxy.mp4")
+            view_crops = {v: crops[v] for v in views}
+            if progress:
+                progress("measuring per-view motion")
+            tracks = detect.view_activity(proxy, view_crops, start, end)
+            activity = detect.activity_scores(tracks)
+            pano = {v for v in views if editor.is_pano(crops[v], out_w / out_h)}
+            cuts = editor.build_smart_cutlist(
+                views, start, end,
+                switch_s=body.switch_s,
+                beats=(analysis or {}).get("beats"),
+                events=_events_from_analysis(analysis, start, end),
+                activity=activity, pano_views=pano, seed=body.seed,
+            )
+        else:
+            cuts = editor.build_cutlist(views, start, end, body.switch_s, body.seed)
+        suffix = "_synced" if audio_source else ""
         out = store.video_dir(video_id) / "exports" / (
-            f"edit_{int(body.start)}-{int(body.end)}_{body.orientation}.mp4"
+            f"edit_{int(start)}-{int(end)}_{body.orientation}{suffix}.mp4"
         )
         editor.render(
             video["source_path"], video["meta"]["width"], video["meta"]["height"],
-            crops, cuts, body.orientation, out, progress=progress,
+            crops, cuts, body.orientation, out,
+            camera_motion=body.camera_motion, transitions=body.transitions,
+            fps=video["meta"].get("fps") or 30.0, seed=body.seed,
+            audio_source=audio_source, audio_offset=audio_offset, progress=progress,
         )
-        return {"file": out.name, "cuts": len(cuts)}
+        return {"file": out.name, "cuts": len(cuts), "synced": bool(audio_source)}
 
     return jobs.submit("edit", run)
 

@@ -104,6 +104,60 @@ def scan_window(scanner: FaceScanner, source: str, start: float, end: float, int
     return best
 
 
+def view_activity(
+    source: str,
+    crops: dict[str, dict],
+    start: float,
+    end: float,
+    fps: float = 2.0,
+) -> dict[str, tuple[list[float], list[float]]]:
+    """Per-view motion track over [start, end): {view: (times, motion)}.
+
+    Measures frame-to-frame change inside each crop box, so the cut list can
+    favour whoever is moving/playing now. One ffmpeg decode pass for the range.
+    """
+    if not crops or end <= start:
+        return {}
+    times: list[float] = []
+    motion: dict[str, list[float]] = {name: [] for name in crops}
+    prev = None
+    prev_t = start
+    for t, frame in probe.read_gray_frames(source, start, end, fps):
+        h, w = frame.shape
+        if prev is not None:
+            diff = np.abs(frame.astype(np.int16) - prev)
+            times.append(round((t + prev_t) / 2, 3))
+            for name, box in crops.items():
+                x0 = int(max(0, min(box["x"], 1)) * w)
+                y0 = int(max(0, min(box["y"], 1)) * h)
+                x1 = int(min(1.0, box["x"] + box["w"]) * w)
+                y1 = int(min(1.0, box["y"] + box["h"]) * h)
+                region = diff[y0:max(y0 + 1, y1), x0:max(x0 + 1, x1)]
+                motion[name].append(float(region.mean()) if region.size else 0.0)
+        prev, prev_t = frame.astype(np.int16), t
+    return {name: (times, motion[name]) for name in crops}
+
+
+def activity_scores(
+    tracks: dict[str, tuple[list[float], list[float]]],
+) -> dict[str, tuple[list[float], list[float]]]:
+    """Z-score each view's own motion track so 'unusually active now' stands out.
+
+    Per-view normalisation cancels a constantly-busy player (e.g. the drummer)
+    so the score reflects *relative* activity rather than raw movement.
+    """
+    scored: dict[str, tuple[list[float], list[float]]] = {}
+    for name, (times, motion) in tracks.items():
+        arr = np.array(motion, dtype=float)
+        if len(arr) == 0:
+            scored[name] = (times, [])
+            continue
+        std = arr.std()
+        z = (arr - arr.mean()) / std if std > 1e-6 else np.zeros_like(arr)
+        scored[name] = (times, [round(float(v), 3) for v in z])
+    return scored
+
+
 def find_fun_moments(
     source: str,
     audio_result: dict,

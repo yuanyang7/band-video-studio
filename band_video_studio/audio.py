@@ -18,6 +18,10 @@ WINDOW_S = 0.975  # YAMNet's native window hop
 CHUNK_S = 600     # classify in 10-minute chunks to bound memory
 
 _LAUGH_CLASSES = {"Laughter", "Giggle", "Snicker", "Chuckle, chortle", "Belly laugh"}
+_VOCAL_CLASSES = {
+    "Singing", "Male singing", "Female singing", "Child singing",
+    "Choir", "Synthetic singing", "Rapping", "Humming", "Yodeling", "Chant",
+}
 
 
 # ---------------------------------------------------------------- inference
@@ -48,6 +52,7 @@ def classify_audio(samples: np.ndarray, sample_rate: int) -> list[dict]:
                                        scores.get("Musical instrument", 0.0)), 4),
                     "speech": round(scores.get("Speech", 0.0), 4),
                     "laugh": round(max((scores.get(c, 0.0) for c in _LAUGH_CLASSES), default=0.0), 4),
+                    "vocals": round(max((scores.get(c, 0.0) for c in _VOCAL_CLASSES), default=0.0), 4),
                 })
     return windows
 
@@ -129,8 +134,169 @@ def find_highlights(
             highlights.append({
                 "start": round(h_start, 2), "end": round(h_end, 2),
                 "score": round(peak, 2), "song": [round(start, 2), round(end, 2)],
+                "kind": "peak",
             })
     return highlights
+
+
+def find_instrumental_sections(
+    times: np.ndarray,
+    vocals: np.ndarray,
+    music: np.ndarray,
+    songs: list[tuple[float, float]],
+    vocals_off: float = 0.12,
+    vocals_on: float = 0.22,
+    music_floor: float = 0.15,
+    min_len_s: float = 8.0,
+    merge_gap_s: float = 4.0,
+    max_song_fraction: float = 0.85,
+) -> list[dict]:
+    """Sustained stretches inside a song where music continues but vocals drop out."""
+    sections: list[dict] = []
+    for start, end in songs:
+        mask = (times >= start) & (times < end)
+        if mask.sum() < 8:
+            continue
+        seg_times = times[mask]
+        seg_vocals = smooth(vocals[mask], 5)
+        seg_music = smooth(music[mask], 5)
+
+        raw: list[list[float]] = []
+        active = False
+        seg_start = 0.0
+        for t, v, m in zip(seg_times, seg_vocals, seg_music):
+            music_ok = m >= music_floor
+            if not active and music_ok and v < vocals_off:
+                active, seg_start = True, float(t)
+            elif active and (v > vocals_on or not music_ok):
+                active = False
+                raw.append([seg_start, float(t)])
+        if active:
+            raw.append([seg_start, float(seg_times[-1]) + WINDOW_S])
+
+        merged: list[list[float]] = []
+        for seg in raw:
+            if merged and seg[0] - merged[-1][1] <= merge_gap_s:
+                merged[-1][1] = seg[1]
+            else:
+                merged.append(seg)
+
+        song_len = max(1e-3, end - start)
+        for h_start, h_end in merged:
+            length = h_end - h_start
+            if length < min_len_s:
+                continue
+            if length / song_len > max_song_fraction:
+                continue
+            seg_mask = (seg_times >= h_start) & (seg_times < h_end)
+            sections.append({
+                "start": round(h_start, 2), "end": round(h_end, 2),
+                "score": round(float(seg_vocals[seg_mask].mean()), 3),
+                "song": [round(start, 2), round(end, 2)],
+                "kind": "instrumental",
+            })
+    return sections
+
+
+# ------------------------------------------------------------ beat tracking
+# Cuts feel musical when they land on the beat. We derive a beat grid from the
+# audio with numpy only (no librosa): spectral-flux onset envelope -> tempo via
+# autocorrelation -> phase-aligned beat times. Good enough to snap cut points to.
+
+ONSET_HOP = 512        # samples per onset frame (~32 ms at 16 kHz)
+ONSET_WIN = 1024       # analysis window for the onset STFT
+TEMPO_MIN, TEMPO_MAX = 60.0, 180.0  # plausible rehearsal tempo range (BPM)
+
+
+def onset_envelope(samples: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+    """Spectral-flux onset strength per ~32 ms frame. Returns (times, envelope)."""
+    if len(samples) < ONSET_WIN:
+        return np.array([]), np.array([])
+    n = 1 + (len(samples) - ONSET_WIN) // ONSET_HOP
+    window = np.hanning(ONSET_WIN).astype(np.float32)
+    frames = np.empty((n, ONSET_WIN), dtype=np.float32)
+    for i in range(n):
+        start = i * ONSET_HOP
+        frames[i] = samples[start:start + ONSET_WIN] * window
+    mag = np.abs(np.fft.rfft(frames, axis=1))
+    flux = np.diff(mag, axis=0)
+    flux[flux < 0] = 0.0  # half-wave rectify: onsets are energy *increases*
+    env = flux.sum(axis=1)
+    env = np.concatenate([[0.0], env])  # align length with frame count
+    times = (np.arange(n) * ONSET_HOP + ONSET_WIN / 2) / sample_rate
+    return times, env
+
+
+def estimate_tempo(env: np.ndarray, hop_s: float) -> float:
+    """Dominant tempo (BPM) of an onset envelope via autocorrelation, 0 if unclear."""
+    if len(env) < 8:
+        return 0.0
+    e = env - env.mean()
+    ac = np.correlate(e, e, mode="full")[len(e) - 1:]  # nonnegative lags
+    lag_min = max(1, int(round(60.0 / TEMPO_MAX / hop_s)))
+    lag_max = min(len(ac) - 1, int(round(60.0 / TEMPO_MIN / hop_s)))
+    if lag_max <= lag_min:
+        return 0.0
+    band = ac[lag_min:lag_max + 1]
+    if band.max() <= 0:
+        return 0.0
+    best_lag = lag_min + int(np.argmax(band))
+    # octave correction: an integer 2-beat lag often aliases above the true beat
+    # lag (which falls between bins). Prefer the faster tempo when its halved lag
+    # is still a strong peak, so 60 -> 120 rather than reporting half-time.
+    for _ in range(2):
+        half = int(round(best_lag / 2))
+        if half >= lag_min and ac[half] >= 0.5 * ac[best_lag]:
+            best_lag = half
+        else:
+            break
+    return 60.0 / (best_lag * hop_s)
+
+
+def beat_grid(
+    times: np.ndarray,
+    env: np.ndarray,
+    period_s: float,
+    start: float,
+    end: float,
+) -> list[float]:
+    """Phase-align a pulse train of spacing period_s to the envelope over [start, end)."""
+    if period_s <= 0 or len(times) == 0 or end <= start:
+        return []
+    # try a handful of phase offsets within one beat, keep the one whose grid
+    # points sample the most onset energy
+    best_phase, best_score = 0.0, -1.0
+    for frac in np.linspace(0, 1, 12, endpoint=False):
+        phase = start + frac * period_s
+        grid = np.arange(phase, end, period_s)
+        if len(grid) == 0:
+            continue
+        score = float(np.interp(grid, times, env, left=0.0, right=0.0).sum())
+        if score > best_score:
+            best_phase, best_score = phase, score
+    beats = np.arange(best_phase, end, period_s)
+    return [round(float(b), 3) for b in beats if b >= start]
+
+
+def detect_beats(
+    samples: np.ndarray,
+    sample_rate: int,
+    songs: list[tuple[float, float]],
+) -> tuple[list[float], float]:
+    """Beat timestamps across all song spans plus the estimated tempo (BPM)."""
+    times, env = onset_envelope(samples, sample_rate)
+    if len(env) == 0:
+        return [], 0.0
+    hop_s = ONSET_HOP / sample_rate
+    tempo = estimate_tempo(env, hop_s)
+    if tempo <= 0:
+        return [], 0.0
+    period = 60.0 / tempo
+    beats: list[float] = []
+    spans = songs or [(float(times[0]), float(times[-1]) + hop_s)]
+    for start, end in spans:
+        beats.extend(beat_grid(times, env, period, start, end))
+    return beats, round(tempo, 1)
 
 
 def find_laughs(
@@ -159,20 +325,21 @@ def analyze(source: str, progress=None) -> dict:
         progress("decoding audio")
     samples = probe.extract_audio(source)
     if len(samples) == 0:
-        return {"songs": [], "highlights": [], "laughs": [], "windows": []}
+        return {"songs": [], "highlights": [], "laughs": [], "beats": [], "tempo": 0.0, "windows": []}
 
     if progress:
         progress("classifying audio (YAMNet)")
     windows = classify_audio(samples, probe.AUDIO_SR)
     if not windows:
-        return {"songs": [], "highlights": [], "laughs": [], "windows": []}
+        return {"songs": [], "highlights": [], "laughs": [], "beats": [], "tempo": 0.0, "windows": []}
 
     times = np.array([w["t"] for w in windows])
     music = smooth(np.array([w["music"] for w in windows]), 7)
     laugh = np.array([w["laugh"] for w in windows])
+    vocals = np.array([w.get("vocals", 0.0) for w in windows])
     energy = rms_energy(samples, probe.AUDIO_SR)
     n = min(len(energy), len(times))
-    times, music, laugh, energy = times[:n], music[:n], laugh[:n], energy[:n]
+    times, music, laugh, vocals, energy = times[:n], music[:n], laugh[:n], vocals[:n], energy[:n]
 
     if progress:
         progress("segmenting songs")
@@ -180,9 +347,17 @@ def analyze(source: str, progress=None) -> dict:
         times, music, on_threshold=0.35, off_threshold=0.2,
         min_len_s=30.0, merge_gap_s=12.0,
     )
+    if progress:
+        progress("tracking beats")
+    beats, tempo = detect_beats(samples, probe.AUDIO_SR, songs)
     return {
         "songs": [{"start": round(s, 2), "end": round(e, 2)} for s, e in songs],
-        "highlights": find_highlights(times, energy, songs),
+        "highlights": (
+            find_highlights(times, energy, songs)
+            + find_instrumental_sections(times, vocals, music, songs)
+        ),
         "laughs": find_laughs(times, laugh),
+        "beats": beats,
+        "tempo": tempo,
         "windows": windows,
     }

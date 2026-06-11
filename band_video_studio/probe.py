@@ -118,3 +118,35 @@ def sample_frames(src: str, start: float, end: float, interval: float, height: i
     while t < end:
         yield t, extract_frame_jpeg(src, t, height=height)
         t += interval
+
+
+def read_gray_frames(src: str, start: float, end: float, fps: float, height: int = 180):
+    """Yield (timestamp, grayscale ndarray) over [start, end) in ONE ffmpeg pass.
+
+    Decodes downscaled single-channel rawvideo so per-region motion can be
+    measured cheaply — far faster than per-frame seeks via extract_frame_jpeg.
+    """
+    if end <= start or fps <= 0:
+        return
+    # probe the scaled width so we can reshape the raw byte stream
+    width = max(2, round(probe(src)["width"] * height / max(1, probe(src)["height"])))
+    width -= width % 2
+    cmd = [
+        "ffmpeg", "-v", "error", "-ss", str(start), "-i", src, "-t", str(end - start),
+        "-vf", f"fps={fps},scale={width}:{height}",
+        "-pix_fmt", "gray", "-f", "rawvideo", "-",
+    ]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    frame_bytes = width * height
+    i = 0
+    try:
+        while True:
+            buf = proc.stdout.read(frame_bytes)
+            if len(buf) < frame_bytes:
+                break
+            frame = np.frombuffer(buf, dtype=np.uint8).reshape(height, width)
+            yield start + i / fps, frame
+            i += 1
+    finally:
+        proc.stdout.close()
+        proc.wait()

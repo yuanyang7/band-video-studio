@@ -13,6 +13,7 @@ Interactive app for analyzing and auto-editing band rehearsal videos (fixed-came
 **Editing**
 - **Lyrics matching** *(optional, local whisper)* — give it a song name + lyrics, it transcribes and aligns lyric lines to timestamps.
 - **Multicam-style auto edit** — define a crop region per player on the fixed wide shot, and it cuts a song into a view-switching edit (horizontal 16:9 or vertical 9:16), rendered from the original file so 4K detail survives the crop.
+- **Sync to recording** — upload a clean, separately-recorded take of a song that plays in the video; onset-envelope cross-correlation locates *where* in the video that take sits and shows the match for review. When an alignment exists, **Render edit** crops the aligned span and replaces the camera audio with your recording (original muted). Fully local, no API.
 
 ## Setup
 
@@ -39,6 +40,7 @@ Workflow in the UI:
 2. **Analyze** — songs + highlights + fun moments; optionally tick the Claude deep pass.
 3. Browse the **timeline** — songs (green), highlights (amber), fun moments (red). Click to seek; click list items to jump; double-click a song to fill the export range.
 4. **Crops** — grab a frame, drag a box per player, save, then **Export edit**.
+5. **Sync to recording** *(optional)* — upload a clean recording of a song in the video; it aligns and fills the export range. Then **Render edit** uses that range and lays your recording on as the audio (original muted).
 
 ## Architecture
 
@@ -50,7 +52,8 @@ band_video_studio/
   detect.py   face-blendshape smile detection + audio/visual fusion → fun moments
   vision.py   optional Claude deep pass on candidate windows only
   lyrics.py   optional faster-whisper transcription + lyric line alignment
-  editor.py   ffmpeg filtergraph multicam-style crop/cut renderer
+  align.py    onset-envelope cross-correlation: locate a clean recording within a video
+  editor.py   ffmpeg filtergraph multicam-style crop/cut renderer + muted-sync render
   store.py    JSON metadata store under data/
   jobs.py     background job manager
   server.py   FastAPI app + REST API

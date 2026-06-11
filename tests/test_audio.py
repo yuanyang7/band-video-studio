@@ -1,6 +1,46 @@
 import numpy as np
 
-from band_video_studio.audio import find_highlights, find_laughs, segments_from_scores
+from band_video_studio.audio import (
+    ONSET_HOP,
+    beat_grid,
+    estimate_tempo,
+    find_highlights,
+    find_laughs,
+    onset_envelope,
+    segments_from_scores,
+)
+
+
+def _click_track(bpm: float, sr: int = 16000, duration: float = 20.0) -> np.ndarray:
+    """Silence with a short noise burst every beat at the given tempo."""
+    n = int(sr * duration)
+    sig = np.zeros(n, dtype=np.float32)
+    period = int(sr * 60.0 / bpm)
+    burst = int(sr * 0.02)
+    rng = np.random.default_rng(0)
+    for start in range(0, n - burst, period):
+        sig[start:start + burst] = rng.standard_normal(burst).astype(np.float32)
+    return sig
+
+
+def test_estimate_tempo_recovers_bpm():
+    sr = 16000
+    sig = _click_track(120.0, sr=sr)
+    times, env = onset_envelope(sig, sr)
+    bpm = estimate_tempo(env, ONSET_HOP / sr)
+    assert abs(bpm - 120.0) < 6.0  # within a few BPM
+
+
+def test_beat_grid_lands_on_clicks():
+    sr = 16000
+    bpm = 100.0
+    sig = _click_track(bpm, sr=sr, duration=10.0)
+    times, env = onset_envelope(sig, sr)
+    beats = beat_grid(times, env, 60.0 / bpm, 0.0, 10.0)
+    assert len(beats) >= 8
+    # consecutive beats are one period apart
+    diffs = np.diff(beats)
+    assert np.allclose(diffs, 60.0 / bpm, atol=0.05)
 
 
 def test_segments_basic_hysteresis():

@@ -67,6 +67,7 @@ async function openVideo(id) {
   renderCropList();
   refreshExports();
   renderLyrics();
+  renderSync();
 }
 
 $("register-btn").onclick = safe(async () => {
@@ -107,8 +108,16 @@ function drawTimeline() {
   if (a) {
     ctx.fillStyle = "#1d4d35";
     for (const s of a.songs || []) ctx.fillRect(x(s.start), 8, Math.max(2, x(s.end) - x(s.start)), 22);
-    ctx.fillStyle = "#f6c343";
-    for (const h of a.highlights || []) ctx.fillRect(x(h.start), 14, Math.max(2, x(h.end) - x(h.start)), 10);
+    for (const h of a.highlights || []) {
+      if (h.kind === "instrumental") continue;
+      ctx.fillStyle = "#f6c343";
+      ctx.fillRect(x(h.start), 14, Math.max(2, x(h.end) - x(h.start)), 10);
+    }
+    ctx.fillStyle = "#9b7be0";
+    for (const h of a.highlights || []) {
+      if (h.kind !== "instrumental") continue;
+      ctx.fillRect(x(h.start), 32, Math.max(2, x(h.end) - x(h.start)), 8);
+    }
     ctx.fillStyle = "#ff7a8a";
     for (const m of a.fun_moments || []) {
       const cx = x((m.start + m.end) / 2);
@@ -217,7 +226,12 @@ $("analyze-btn").onclick = safe(async () => {
 function renderAnalysis() {
   const a = current.analysis;
   $("analysis-summary").textContent = a
-    ? `${(a.songs || []).length} songs · ${(a.highlights || []).length} highlights · ${(a.fun_moments || []).length} fun moments`
+    ? (() => {
+        const hl = a.highlights || [];
+        const peaks = hl.filter((h) => h.kind !== "instrumental").length;
+        const instr = hl.filter((h) => h.kind === "instrumental").length;
+        return `${(a.songs || []).length} songs · ${peaks} highlights · ${instr} instrumentals · ${(a.fun_moments || []).length} fun moments`;
+      })()
     : "not analyzed yet";
   const ul = $("moments");
   ul.innerHTML = "";
@@ -235,7 +249,13 @@ function renderAnalysis() {
     // convenience: double-clicking a song selects it as the export range
     ul.lastChild.ondblclick = () => setSelection(s.start, s.end);
   });
-  (a.highlights || []).forEach((h) => add(h.start, `⭐ highlight (z=${h.score})`, ""));
+  (a.highlights || []).forEach((h) => {
+    const label = h.kind === "instrumental"
+      ? `🎻 instrumental (${fmt(h.start)}–${fmt(h.end)})`
+      : `⭐ highlight (z=${h.score})`;
+    add(h.start, label, "");
+    if (h.kind === "instrumental") ul.lastChild.ondblclick = () => setSelection(h.start, h.end);
+  });
   (a.fun_moments || []).forEach((m) => {
     const caption = m.caption || (m.type === "laughter" ? "laughter heard" : "smiles spotted");
     add(m.start, `😄 ${caption} (score ${m.score})`, `fun-${m.type}`);
@@ -348,6 +368,9 @@ $("export-btn").onclick = safe(async () => {
     start, end,
     orientation: $("edit-orientation").value,
     switch_s: parseFloat($("edit-switch").value || 4),
+    smart: $("opt-smart").checked,
+    camera_motion: $("opt-motion").checked,
+    transitions: $("opt-transitions").checked,
   });
   watchJob(job.id, refreshExports);
 });
@@ -363,6 +386,48 @@ async function refreshExports() {
     ul.appendChild(li);
   }
 }
+
+/* ---------------------------------------------------------------- sync */
+
+function renderSync() {
+  const s = current && current.sync;
+  const el = $("sync-result");
+  el.innerHTML = "";
+  if (!s) return;
+  const weak = s.confidence < 0.25 ? " ⚠️ weak match" : "";
+  const span = document.createElement("span");
+  span.textContent = `✅ ${s.file} @ ${fmt(s.offset)}–${fmt(s.offset + s.duration)} (match ${s.confidence})${weak}. Render edit will use this audio.`;
+  const useBtn = document.createElement("button");
+  useBtn.textContent = "set range";
+  useBtn.onclick = () => setSelection(s.offset, s.offset + s.duration);
+  const clearBtn = document.createElement("button");
+  clearBtn.textContent = "clear";
+  clearBtn.onclick = safe(async () => {
+    await api(`/videos/${current.id}/sync-audio`, { method: "DELETE" });
+    openVideo(current.id);
+  });
+  el.append(span, " ", useBtn, " ", clearBtn);
+}
+
+$("sync-btn").onclick = safe(async () => {
+  if (!current) return;
+  const file = $("sync-file").files[0];
+  if (!file) { alert("Choose an audio recording first."); return; }
+  const form = new FormData();
+  form.append("file", file);
+  $("job-status").textContent = "⏳ uploading recording…";
+  const res = await fetch(`/api/videos/${current.id}/sync-audio`, { method: "POST", body: form });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  const job = await res.json();
+  watchJob(job.id, async (done) => {
+    const r = done.result || {};
+    await openVideo(current.id);
+    setSelection(r.offset, r.offset + r.duration); // pre-fill the export range from the alignment
+    if (r.confidence < 0.25) {
+      alert(`Aligned at ${fmt(r.offset)} but the match is weak (${r.confidence}). Check it before rendering.`);
+    }
+  });
+});
 
 /* -------------------------------------------------------------- lyrics */
 
