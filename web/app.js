@@ -165,15 +165,7 @@ timeline.onmousedown = (e) => {
   if (!current) return;
   draggingEdge = nearEdge(e);
   if (draggingEdge) return;
-  const t = eventTime(e);
-  const songs = (current.analysis && current.analysis.songs) || [];
-  const offsetY = e.clientY - timeline.getBoundingClientRect().top;
-  const hit = songs.find((s) => t >= s.start && t <= s.end);
-  if (hit && offsetY < 34) {
-    setSelection(hit.start, hit.end); // click a song block -> select it
-  } else {
-    $("player").currentTime = t;
-  }
+  $("player").currentTime = eventTime(e); // clicks just seek; use the button to select
 };
 timeline.onmousemove = (e) => {
   if (!current) return;
@@ -194,6 +186,19 @@ for (const id of ["edit-start", "edit-end"]) {
     if (!isNaN(start) && !isNaN(end) && end > start) { sel = { start, end }; drawTimeline(); }
   });
 }
+$("select-at-playhead").onclick = () => {
+  if (!current) return;
+  const t = $("player").currentTime;
+  const songs = (current.analysis && current.analysis.songs) || [];
+  const hit = songs.find((s) => t >= s.start && t <= s.end);
+  if (hit) {
+    setSelection(hit.start, hit.end);
+  } else {
+    const prevEnd = Math.max(0, ...songs.filter((s) => s.end <= t).map((s) => s.end));
+    const nextStart = Math.min(current.meta.duration, ...songs.filter((s) => s.start >= t).map((s) => s.start));
+    setSelection(prevEnd, nextStart);
+  }
+};
 $("player").ontimeupdate = drawTimeline;
 window.onresize = drawTimeline;
 
