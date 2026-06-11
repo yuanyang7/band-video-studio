@@ -32,7 +32,16 @@ label { display: block; margin: 4px 0; }
 #video-list li.active { background: #2d3b63; }
 #job-status { font-size: 12px; color: #f6c343; min-height: 18px; }
 
-#main { flex: 1; padding: 16px; min-width: 0; }
+#main, #library-view { flex: 1; padding: 16px; min-width: 0; }
+
+#lib-folders { list-style: none; margin: 6px 0; padding: 0; }
+#lib-folders li {
+  display: flex; justify-content: space-between; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: 6px; margin-bottom: 3px; background: #22242c; font-size: 12px;
+}
+#lib-folders .lib-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
+#lib-folders .del { color: #ff7a8a; cursor: pointer; }
+.lib-video { color: #8a8f9c; font-size: 12px; margin-left: 6px; }
 #player { width: 100%; max-height: 48vh; background: #000; border-radius: 8px; }
 #timeline { width: 100%; display: block; margin-top: 6px; border-radius: 6px; background: #1f2128; cursor: pointer; }
 #legend { margin: 6px 0 14px; }

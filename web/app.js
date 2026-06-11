@@ -58,6 +58,7 @@ async function openVideo(id) {
   current = await api(`/videos/${id}`);
   crops = current.crops || {};
   sel = null;
+  $("library-view").hidden = true;
   $("main").hidden = false;
   if (current.has_proxy) $("player").src = `/api/videos/${id}/stream`;
   $("lyrics-avail").textContent = current.capabilities.lyrics ? "" : "(install: uv sync --extra lyrics)";
@@ -91,6 +92,74 @@ $("upload-file").onchange = async () => {
   watchJob(job, () => openVideo(video.id));
   refreshList();
 };
+
+/* ----------------------------------------------------- 素材库 / library */
+
+async function refreshLibrary() {
+  const lib = await api("/library");
+  const ul = $("lib-folders");
+  ul.innerHTML = "";
+  for (const folder of lib.folders) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="lib-path" title="${folder}">${folder}</span><span class="del" title="remove">✕</span>`;
+    li.querySelector(".del").onclick = safe(async () => {
+      await post("/library/folders/remove", { path: folder });
+      refreshLibrary();
+    });
+    ul.appendChild(li);
+  }
+}
+
+$("lib-add").onclick = safe(async () => {
+  const path = $("lib-folder").value.trim();
+  if (!path) return;
+  await post("/library/folders", { path });
+  $("lib-folder").value = "";
+  refreshLibrary();
+});
+
+$("lib-scan").onclick = safe(async () => {
+  const job = await post("/library/scan", {});
+  watchJob(job.id, (done) => {
+    const r = done.result || {};
+    $("job-status").textContent = `✅ scan: ${r.new} new video(s) imported`;
+    setTimeout(() => ($("job-status").textContent = ""), 6000);
+    refreshList();
+  });
+});
+
+function openMomentAt(videoId, t) {
+  return safe(async () => {
+    await openVideo(videoId);
+    const p = $("player");
+    const seek = () => { p.currentTime = t; p.play().catch(() => {}); };
+    if (p.readyState >= 1) seek();
+    else p.addEventListener("loadedmetadata", seek, { once: true });
+  })();
+}
+
+$("lib-best").onclick = safe(async () => {
+  const best = await api("/library/best");
+  const fill = (ulId, items, label) => {
+    const ul = $(ulId);
+    ul.innerHTML = "";
+    if (!items.length) {
+      ul.innerHTML = `<li class="miss">nothing yet — analyze some videos first</li>`;
+      return;
+    }
+    for (const m of items) {
+      const li = document.createElement("li");
+      const caption = m.caption || (m.type === "laughter" ? "laughter heard" : "smiles spotted");
+      li.innerHTML = `<span class="t">${fmt(m.start)}</span>😄 ${caption} ${label(m)} <span class="lib-video">${m.video_name}</span>`;
+      li.onclick = () => openMomentAt(m.video_id, m.start);
+      ul.appendChild(li);
+    }
+  };
+  fill("best-fun", best.fun, (m) => `(score ${m.score})`);
+  fill("best-expr", best.expressions, (m) => `(smile ${m.max_smile})`);
+  $("main").hidden = true;
+  $("library-view").hidden = false;
+});
 
 /* ------------------------------------------------------------ timeline */
 
@@ -537,3 +606,4 @@ function renderLyrics() {
 }
 
 refreshList();
+refreshLibrary();

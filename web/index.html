@@ -22,8 +22,36 @@
     <h2>Videos</h2>
     <ul id="video-list"></ul>
   </section>
+  <section>
+    <h2>素材库 · Library</h2>
+    <p class="hint">Watched folders (e.g. a NAS mount). Scan imports and analyzes new videos one at a time.</p>
+    <div class="row">
+      <input type="text" id="lib-folder" placeholder="folder path, e.g. /Volumes/NAS/band">
+      <button id="lib-add">Add</button>
+    </div>
+    <ul id="lib-folders"></ul>
+    <div class="row">
+      <button id="lib-scan">Scan</button>
+      <button id="lib-best">🌍 Best moments</button>
+    </div>
+  </section>
   <div id="job-status"></div>
 </aside>
+
+<main id="library-view" hidden>
+  <div id="panels">
+    <section class="panel">
+      <h2>Funniest moments — whole library</h2>
+      <p class="hint">Across every analyzed video, by fused laugh/smile score. Click to open the video at that moment.</p>
+      <ul id="best-fun"></ul>
+    </section>
+    <section class="panel">
+      <h2>Most exaggerated expressions</h2>
+      <p class="hint">Ranked by peak smile blendshape. Scores are only roughly comparable across videos.</p>
+      <ul id="best-expr"></ul>
+    </section>
+  </div>
+</main>
 
 <main id="main" hidden>
   <video id="player" controls></video>
