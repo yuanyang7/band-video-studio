@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# App data: uploaded/registered videos, proxies, analysis results, exports
+data/
+
+# OS
+.DS_Store
