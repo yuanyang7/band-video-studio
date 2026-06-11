@@ -61,29 +61,31 @@ def _is_valid_media(path: Path) -> bool:
         return False
 
 
-def make_proxy(src: str, dest: Path, height: int = 540, progress=None) -> Path:
+PROXY_HEIGHT = 1080  # high enough for small-face detection in wide shots
+
+
+def make_proxy(src: str, dest: Path, height: int = PROXY_HEIGHT, progress=None) -> Path:
     """Downscaled H.264 proxy for browser playback and frame sampling.
 
     Safe under concurrency: transcodes to a temp file and renames atomically,
-    so dest only ever exists complete. A pre-existing broken dest (from an
-    interrupted run) is detected and re-transcoded.
+    so dest only ever exists complete. A pre-existing broken or outdated
+    (wrong height) dest is detected and re-transcoded. Uses the macOS
+    hardware encoder when available, falling back to libx264.
     """
     with _proxy_locks[str(dest)]:
         if dest.exists():
-            if _is_valid_media(dest):
+            if _is_valid_media(dest) and probe(str(dest))["height"] == height:
                 return dest
-            dest.unlink()  # leftover partial file from a crashed/killed run
+            dest.unlink()  # partial file, or proxy from an older lower-res version
         if progress:
             progress("transcoding proxy")
         tmp = dest.with_name(dest.name + ".part.mp4")
-        _run([
-            "ffmpeg", "-y", "-i", src,
-            "-vf", f"scale=-2:{height}",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "26",
-            "-c:a", "aac", "-b:a", "96k",
-            "-movflags", "+faststart",
-            str(tmp),
-        ])
+        base = ["ffmpeg", "-y", "-i", src, "-vf", f"scale=-2:{height}"]
+        tail = ["-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(tmp)]
+        try:
+            _run(base + ["-c:v", "h264_videotoolbox", "-b:v", "6M"] + tail)
+        except RuntimeError:
+            _run(base + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"] + tail)
         tmp.replace(dest)
     return dest
 

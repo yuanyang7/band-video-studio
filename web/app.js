@@ -136,7 +136,7 @@ $("analyze-btn").onclick = async () => {
   if (!current) return;
   const job = await post(`/videos/${current.id}/analyze`, {
     fun_detection: $("opt-fun").checked,
-    sweep_chat: $("opt-sweep").checked,
+    sweep: $("opt-sweep").checked,
     claude_pass: $("opt-claude").checked,
   });
   watchJob(job.id, () => openVideo(current.id));

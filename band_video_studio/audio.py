@@ -136,7 +136,7 @@ def find_highlights(
 def find_laughs(
     times: np.ndarray,
     laugh_scores: np.ndarray,
-    threshold: float = 0.12,
+    threshold: float = 0.04,  # calibrated: distant-mic laughter under chatter peaks ~0.06
     merge_gap_s: float = 3.0,
 ) -> list[dict]:
     events = []

@@ -101,7 +101,7 @@ def frame(video_id: str, t: float = 0.0):
 
 class AnalyzeBody(BaseModel):
     fun_detection: bool = True      # local smile/laugh fusion (free)
-    sweep_chat: bool = True         # sparse smile sweep over non-music stretches
+    sweep: bool = True              # sparse smile sweep over the whole video
     claude_pass: bool = False       # optional paid deep pass on candidates
 
 
@@ -116,7 +116,7 @@ def analyze(video_id: str, body: AnalyzeBody):
         duration = video["meta"]["duration"]
         if body.fun_detection:
             result["fun_moments"] = detect.find_fun_moments(
-                proxy, result, duration, sweep_chat=body.sweep_chat, progress=progress
+                proxy, result, duration, sweep=body.sweep, progress=progress
             )
             if body.claude_pass and vision.available():
                 result["fun_moments"] = vision.enrich_fun_moments(
