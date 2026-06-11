@@ -386,10 +386,14 @@ def download_export(video_id: str, name: str):
     return FileResponse(path, media_type="video/mp4", filename=path.name)
 
 
-# ------------------------------------------------------------- 素材库 library
+# ----------------------------------------------------------------- library
 
 class FolderBody(BaseModel):
     path: str
+
+
+class ScanBody(BaseModel):
+    limit: int | None = None  # import at most N new videos this run
 
 
 @app.get("/api/library")
@@ -419,32 +423,44 @@ def remove_library_folder(body: FolderBody):
 
 
 @app.post("/api/library/scan")
-def scan_library():
+def scan_library(body: ScanBody | None = None):
     """Find new videos in the library folders and import them one at a time.
 
     A single sequential job: each new file is registered, proxied and analyzed
     before the next starts, so a big NAS folder doesn't fan out into dozens of
-    concurrent ffmpeg/model runs.
+    concurrent ffmpeg/model runs. A file that fails (corrupt, still uploading,
+    NAS hiccup) is skipped and reported — it never aborts the whole run. With
+    `limit` set, at most that many videos are imported per run, so a huge
+    backlog can be worked through in batches.
     """
     folders = store.load_library().get("folders", [])
     if not folders:
         raise HTTPException(400, "add a library folder first")
+    limit = body.limit if body else None
 
     def run(progress=None):
+        if progress:
+            progress("scanning folders")
         existing = {v["source_path"] for v in store.list_videos()}
         new_files = library.find_new(library.scan_folders(folders), existing)
-        imported = []
-        for i, path in enumerate(new_files):
-            label = f"{path.name} ({i + 1}/{len(new_files)})"
+        batch = new_files[:limit] if limit else new_files
+        imported, failed = [], []
+        for i, path in enumerate(batch):
+            label = f"{path.name} ({i + 1}/{len(batch)})"
             if progress:
                 progress(f"importing {label}")
-            meta = probe.probe(str(path))
-            video = store.add_video(str(path), path.name, meta)
-            _prepare(video, progress=lambda msg: progress and progress(f"{label}: {msg}"))
-            _run_analysis(video, AnalyzeBody(),
-                          progress=lambda msg: progress and progress(f"{label}: {msg}"))
-            imported.append(video["name"])
-        return {"scanned": len(folders), "new": len(new_files), "imported": imported}
+            try:
+                meta = probe.probe(str(path))
+                video = store.add_video(str(path), path.name, meta)
+                _prepare(video, progress=lambda msg: progress and progress(f"{label}: {msg}"))
+                _run_analysis(video, AnalyzeBody(),
+                              progress=lambda msg: progress and progress(f"{label}: {msg}"))
+                imported.append(video["name"])
+            except Exception as e:
+                failed.append({"file": str(path), "error": str(e).split("\n")[0]})
+        return {"scanned": len(folders), "new": len(new_files),
+                "imported": imported, "failed": failed,
+                "remaining": len(new_files) - len(batch)}
 
     return jobs.submit("library scan", run)
 

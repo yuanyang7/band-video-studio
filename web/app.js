@@ -93,7 +93,7 @@ $("upload-file").onchange = async () => {
   refreshList();
 };
 
-/* ----------------------------------------------------- 素材库 / library */
+/* -------------------------------------------------------------- library */
 
 async function refreshLibrary() {
   const lib = await api("/library");
@@ -119,11 +119,17 @@ $("lib-add").onclick = safe(async () => {
 });
 
 $("lib-scan").onclick = safe(async () => {
-  const job = await post("/library/scan", {});
+  const limit = parseInt($("lib-limit").value, 10);
+  const job = await post("/library/scan", { limit: isNaN(limit) ? null : limit });
   watchJob(job.id, (done) => {
     const r = done.result || {};
-    $("job-status").textContent = `✅ scan: ${r.new} new video(s) imported`;
-    setTimeout(() => ($("job-status").textContent = ""), 6000);
+    const extra = [
+      r.failed && r.failed.length ? `${r.failed.length} skipped` : "",
+      r.remaining ? `${r.remaining} left for the next scan` : "",
+    ].filter(Boolean).join(", ");
+    $("job-status").textContent = `✅ scan: ${(r.imported || []).length} imported${extra ? ` (${extra})` : ""}`;
+    if (r.failed && r.failed.length) console.warn("library scan skipped files:", r.failed);
+    setTimeout(() => ($("job-status").textContent = ""), 8000);
     refreshList();
   });
 });

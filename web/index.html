@@ -23,8 +23,8 @@
     <ul id="video-list"></ul>
   </section>
   <section>
-    <h2>素材库 · Library</h2>
-    <p class="hint">Watched folders (e.g. a NAS mount). Scan imports and analyzes new videos one at a time.</p>
+    <h2>Library</h2>
+    <p class="hint">Watched folders (e.g. a NAS mount). Scan imports and analyzes new videos one at a time; bad files are skipped, not fatal.</p>
     <div class="row">
       <input type="text" id="lib-folder" placeholder="folder path, e.g. /Volumes/NAS/band">
       <button id="lib-add">Add</button>
@@ -32,6 +32,9 @@
     <ul id="lib-folders"></ul>
     <div class="row">
       <button id="lib-scan">Scan</button>
+      <input type="number" id="lib-limit" min="1" step="1" placeholder="max per scan" title="import at most this many new videos per scan (optional — useful for a huge backlog)">
+    </div>
+    <div class="row">
       <button id="lib-best">🌍 Best moments</button>
     </div>
   </section>

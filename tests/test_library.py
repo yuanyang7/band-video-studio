@@ -27,6 +27,13 @@ def test_scan_folders_skips_missing_folder(tmp_path):
     assert scan_folders([str(tmp_path / "nope")]) == []
 
 
+def test_scan_folders_handles_deep_nesting_and_prunes_hidden(tmp_path):
+    deep = _touch(tmp_path / "a/b/c/d/e/f/g/take.mp4")
+    _touch(tmp_path / "a/.cache/sub/skip.mp4")   # inside a hidden dir: pruned
+    _touch(tmp_path / "a/b/.skip.mp4")           # hidden file: skipped
+    assert scan_folders([str(tmp_path)]) == [deep]
+
+
 def test_find_new_dedupes_by_resolved_path(tmp_path):
     a = _touch(tmp_path / "a.mp4")
     b = _touch(tmp_path / "b.mp4")

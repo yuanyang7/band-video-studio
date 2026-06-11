@@ -17,8 +17,8 @@ Interactive app for analyzing and auto-editing band rehearsal videos (fixed-came
 - **Export** — independent of the panels above: pick a range on the timeline, orientation (16:9 or 9:16), and an optional file name; rendered from the original file so 4K detail survives the crop.
 - **Lyrics matching** *(optional, local whisper, experimental)* — give it a song name + lyrics, it transcribes and aligns lyric lines to timestamps.
 
-**素材库 (Library)**
-- **Watched folders** — point the library at folders (e.g. a NAS mount); **Scan** registers any new video files (no copying) and imports them one at a time — proxy + detection sequentially, so a big folder never fans out into dozens of concurrent ffmpeg/model runs.
+**Library**
+- **Watched folders** — point the library at folders (e.g. a NAS mount); **Scan** registers any new video files (no copying) and imports them one at a time — proxy + detection sequentially, so a big folder never fans out into dozens of concurrent ffmpeg/model runs. Deep trees are walked cheaply (hidden dirs pruned), bad files are skipped and reported, and an optional per-scan limit lets you work through a huge backlog in batches.
 - **Cross-video best-of** — once videos are analyzed, **Best moments** aggregates the cached results across the whole library: globally funniest moments (fused laugh/smile score) and most exaggerated expressions (peak smile blendshape). Click any entry to open that video at that moment. Smile scores are only roughly comparable across videos.
 
 ## Setup
@@ -59,7 +59,7 @@ band_video_studio/
   vision.py   optional Claude deep pass on candidate windows only
   lyrics.py   optional faster-whisper transcription + lyric line alignment
   align.py    onset-envelope cross-correlation: locate a clean recording within a video
-  library.py  素材库: watched-folder scanning + cross-video best-of aggregation
+  library.py  media library: watched-folder scanning + cross-video best-of aggregation
   editor.py   ffmpeg filtergraph multicam-style crop/cut renderer + muted-sync render
   store.py    JSON metadata store under data/
   jobs.py     background job manager

@@ -1,4 +1,4 @@
-"""素材库: watched media folders (e.g. a NAS mount) + cross-video queries.
+"""Media library: watched folders (e.g. a NAS mount) + cross-video queries.
 
 A library is a list of folders. Scanning walks them for video files, registers
 anything new, and runs the standard import (proxy + detection) sequentially so
@@ -12,24 +12,29 @@ comparable across videos (different rooms, faces and distances).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".m4v", ".mts", ".webm"}
 
 
 def scan_folders(folders: list[str]) -> list[Path]:
-    """All video files under the given folders (recursive, hidden dirs skipped)."""
+    """All video files under the given folders, recursively.
+
+    Built on os.walk so huge, deeply nested trees stay cheap: hidden
+    directories are pruned before descent (never walked at all), only video
+    files are kept, and nothing but the matches is held in memory.
+    """
     found: list[Path] = []
     for folder in folders:
         root = Path(folder).expanduser()
         if not root.is_dir():
             continue
-        for p in sorted(root.rglob("*")):
-            if p.suffix.lower() not in VIDEO_EXTS or not p.is_file():
-                continue
-            if any(part.startswith(".") for part in p.relative_to(root).parts):
-                continue
-            found.append(p)
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
+            for name in sorted(filenames):
+                if not name.startswith(".") and Path(name).suffix.lower() in VIDEO_EXTS:
+                    found.append(Path(dirpath) / name)
     return found
 
 
