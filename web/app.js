@@ -11,7 +11,11 @@ const post = (path, body) =>
 
 let current = null; // current video detail
 let crops = {};     // name -> {x,y,w,h} normalized
+let sel = null;     // export range selection {start, end} shown on the timeline
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+const safe = (fn) => async (...args) => {
+  try { await fn(...args); } catch (e) { alert(e.message); }
+};
 
 /* ---------------------------------------------------------------- jobs */
 
@@ -53,6 +57,7 @@ async function refreshList() {
 async function openVideo(id) {
   current = await api(`/videos/${id}`);
   crops = current.crops || {};
+  sel = null;
   $("main").hidden = false;
   if (current.has_proxy) $("player").src = `/api/videos/${id}/stream`;
   $("lyrics-avail").textContent = current.capabilities.lyrics ? "" : "(install: uv sync --extra lyrics)";
@@ -64,14 +69,14 @@ async function openVideo(id) {
   renderLyrics();
 }
 
-$("register-btn").onclick = async () => {
+$("register-btn").onclick = safe(async () => {
   const path = $("register-path").value.trim();
   if (!path) return;
   const { video, job } = await post("/videos/register", { path });
   $("register-path").value = "";
   watchJob(job, () => openVideo(video.id));
   refreshList();
-};
+});
 
 $("upload-file").onchange = async () => {
   const file = $("upload-file").files[0];
@@ -117,22 +122,84 @@ function drawTimeline() {
     ctx.fillStyle = "#6db3f2";
     for (const line of ly.lines || []) if (line.start != null) ctx.fillRect(x(line.start), 56, 2, 6);
   }
+  // export-range selection: translucent band + edge handles
+  if (sel) {
+    ctx.fillStyle = "rgba(109, 179, 242, 0.18)";
+    ctx.fillRect(x(sel.start), 0, x(sel.end) - x(sel.start), H);
+    ctx.fillStyle = "#6db3f2";
+    for (const t of [sel.start, sel.end]) ctx.fillRect(x(t) - 1.5 * devicePixelRatio, 0, 3 * devicePixelRatio, H);
+  }
   // playhead
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(x($("player").currentTime), 0, 1.5 * devicePixelRatio, H);
 }
 
-timeline.onclick = (e) => {
-  if (!current) return;
+/* Timeline interaction:
+   - drag a selection edge to fine-tune the export range
+   - click a song block (upper band) to select that song as the range
+   - click anywhere else to seek */
+let draggingEdge = null;
+
+const eventTime = (e) => {
   const rect = timeline.getBoundingClientRect();
-  $("player").currentTime = ((e.clientX - rect.left) / rect.width) * current.meta.duration;
+  return Math.min(Math.max(((e.clientX - rect.left) / rect.width) * current.meta.duration, 0), current.meta.duration);
 };
+const nearEdge = (e) => {
+  if (!sel) return null;
+  const rect = timeline.getBoundingClientRect();
+  const px = (t) => (t / current.meta.duration) * rect.width;
+  const cx = e.clientX - rect.left;
+  if (Math.abs(cx - px(sel.start)) < 8) return "start";
+  if (Math.abs(cx - px(sel.end)) < 8) return "end";
+  return null;
+};
+
+function setSelection(start, end) {
+  sel = { start: Math.max(0, Math.round(start * 10) / 10), end: Math.round(end * 10) / 10 };
+  $("edit-start").value = sel.start;
+  $("edit-end").value = sel.end;
+  drawTimeline();
+}
+
+timeline.onmousedown = (e) => {
+  if (!current) return;
+  draggingEdge = nearEdge(e);
+  if (draggingEdge) return;
+  const t = eventTime(e);
+  const songs = (current.analysis && current.analysis.songs) || [];
+  const offsetY = e.clientY - timeline.getBoundingClientRect().top;
+  const hit = songs.find((s) => t >= s.start && t <= s.end);
+  if (hit && offsetY < 34) {
+    setSelection(hit.start, hit.end); // click a song block -> select it
+  } else {
+    $("player").currentTime = t;
+  }
+};
+timeline.onmousemove = (e) => {
+  if (!current) return;
+  if (draggingEdge) {
+    const t = eventTime(e);
+    if (draggingEdge === "start") setSelection(Math.min(t, sel.end - 1), sel.end);
+    else setSelection(sel.start, Math.max(t, sel.start + 1));
+  } else {
+    timeline.style.cursor = nearEdge(e) ? "ew-resize" : "pointer";
+  }
+};
+window.addEventListener("mouseup", () => { draggingEdge = null; });
+
+// keep selection in sync when the number fields are edited by hand
+for (const id of ["edit-start", "edit-end"]) {
+  $(id).addEventListener("input", () => {
+    const start = parseFloat($("edit-start").value), end = parseFloat($("edit-end").value);
+    if (!isNaN(start) && !isNaN(end) && end > start) { sel = { start, end }; drawTimeline(); }
+  });
+}
 $("player").ontimeupdate = drawTimeline;
 window.onresize = drawTimeline;
 
 /* ------------------------------------------------------------ analysis */
 
-$("analyze-btn").onclick = async () => {
+$("analyze-btn").onclick = safe(async () => {
   if (!current) return;
   const job = await post(`/videos/${current.id}/analyze`, {
     fun_detection: $("opt-fun").checked,
@@ -140,7 +207,7 @@ $("analyze-btn").onclick = async () => {
     claude_pass: $("opt-claude").checked,
   });
   watchJob(job.id, () => openVideo(current.id));
-};
+});
 
 function renderAnalysis() {
   const a = current.analysis;
@@ -160,8 +227,8 @@ function renderAnalysis() {
   };
   (a.songs || []).forEach((s, i) => {
     add(s.start, `🎵 Song ${i + 1} (${fmt(s.start)}–${fmt(s.end)})`, "");
-    // convenience: clicking a song also fills the export range
-    ul.lastChild.ondblclick = () => { $("edit-start").value = s.start; $("edit-end").value = s.end; };
+    // convenience: double-clicking a song selects it as the export range
+    ul.lastChild.ondblclick = () => setSelection(s.start, s.end);
   });
   (a.highlights || []).forEach((h) => add(h.start, `⭐ highlight (z=${h.score})`, ""));
   (a.fun_moments || []).forEach((m) => {
@@ -261,16 +328,24 @@ $("save-crops").onclick = async () => {
 
 /* -------------------------------------------------------------- export */
 
-$("export-btn").onclick = async () => {
+$("export-btn").onclick = safe(async () => {
   if (!current) return;
+  if (!Object.keys(crops).length) {
+    alert("Draw and save at least one player crop first (Player crops panel).");
+    return;
+  }
+  const start = parseFloat($("edit-start").value), end = parseFloat($("edit-end").value);
+  if (isNaN(start) || isNaN(end) || end <= start) {
+    alert("Pick an export range first — click a song on the timeline, or fill start/end.");
+    return;
+  }
   const job = await post(`/videos/${current.id}/edit`, {
-    start: parseFloat($("edit-start").value || 0),
-    end: parseFloat($("edit-end").value || 0),
+    start, end,
     orientation: $("edit-orientation").value,
     switch_s: parseFloat($("edit-switch").value || 4),
   });
   watchJob(job.id, refreshExports);
-};
+});
 
 async function refreshExports() {
   if (!current) return;
@@ -286,7 +361,7 @@ async function refreshExports() {
 
 /* -------------------------------------------------------------- lyrics */
 
-$("lyrics-btn").onclick = async () => {
+$("lyrics-btn").onclick = safe(async () => {
   if (!current) return;
   const job = await post(`/videos/${current.id}/lyrics-match`, {
     start: parseFloat($("edit-start").value || 0),
@@ -295,7 +370,7 @@ $("lyrics-btn").onclick = async () => {
     lyrics: $("lyrics-text").value,
   });
   watchJob(job.id, () => openVideo(current.id));
-};
+});
 
 function renderLyrics() {
   const ul = $("lyrics-lines");
