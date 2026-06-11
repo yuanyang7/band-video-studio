@@ -68,6 +68,7 @@ async function openVideo(id) {
   refreshExports();
   renderLyrics();
   renderSync();
+  setupMixer();
 }
 
 $("register-btn").onclick = safe(async () => {
@@ -118,6 +119,8 @@ function drawTimeline() {
       if (h.kind !== "instrumental") continue;
       ctx.fillRect(x(h.start), 32, Math.max(2, x(h.end) - x(h.start)), 8);
     }
+    ctx.fillStyle = "#4dc4c4";
+    for (const s of a.vocal_segments || []) ctx.fillRect(x(s.start), 26, Math.max(2, x(s.end) - x(s.start)), 4);
     ctx.fillStyle = "#ff7a8a";
     for (const m of a.fun_moments || []) {
       const cx = x((m.start + m.end) / 2);
@@ -335,7 +338,21 @@ function renderCropList() {
   ul.innerHTML = "";
   for (const name of Object.keys(crops)) {
     const li = document.createElement("li");
-    li.innerHTML = `<span>${name}</span><span class="del" title="remove">✕</span>`;
+    li.innerHTML = `<span>${name}</span>
+      <span class="crop-tools">
+        <select class="role" title="role: singer views get the cut when the vocal comes in; wide views return regularly">
+          <option value="">auto</option>
+          <option value="singer">singer</option>
+          <option value="wide">wide / all</option>
+        </select>
+        <span class="del" title="remove">✕</span>
+      </span>`;
+    const roleSel = li.querySelector(".role");
+    roleSel.value = crops[name].role || "";
+    roleSel.onchange = () => {
+      if (roleSel.value) crops[name].role = roleSel.value;
+      else delete crops[name].role;
+    };
     li.querySelector(".del").onclick = () => { delete crops[name]; renderCropList(); drawCrops(); };
     ul.appendChild(li);
   }
@@ -356,7 +373,7 @@ $("save-crops").onclick = async () => {
 $("export-btn").onclick = safe(async () => {
   if (!current) return;
   if (!Object.keys(crops).length) {
-    alert("Draw and save at least one player crop first (Player crops panel).");
+    alert("Set up at least one camera first (Shooting simulation panel).");
     return;
   }
   const start = parseFloat($("edit-start").value), end = parseFloat($("edit-end").value);
@@ -371,6 +388,7 @@ $("export-btn").onclick = safe(async () => {
     smart: $("opt-smart").checked,
     camera_motion: $("opt-motion").checked,
     transitions: $("opt-transitions").checked,
+    name: $("export-name").value.trim() || null,
   });
   watchJob(job.id, refreshExports);
 });
@@ -396,7 +414,7 @@ function renderSync() {
   if (!s) return;
   const weak = s.confidence < 0.25 ? " ⚠️ weak match" : "";
   const span = document.createElement("span");
-  span.textContent = `✅ ${s.file} @ ${fmt(s.offset)}–${fmt(s.offset + s.duration)} (match ${s.confidence})${weak}. Render edit will use this audio.`;
+  span.textContent = `✅ ${s.file} @ ${fmt(s.offset)}–${fmt(s.offset + s.duration)} (match ${s.confidence})${weak}. Export will use this audio.`;
   const useBtn = document.createElement("button");
   useBtn.textContent = "set range";
   useBtn.onclick = () => setSelection(s.offset, s.offset + s.duration);
@@ -428,6 +446,64 @@ $("sync-btn").onclick = safe(async () => {
     }
   });
 });
+
+/* ----------------------------------------------- two-track audition mixer
+   After an alignment exists, the video player and a hidden <audio> with the
+   clean recording play as two layered tracks (like a video editor): toggle
+   either to compare the camera audio with the aligned recording. */
+
+let refAudio = null;
+let recOn = true, camOn = false;
+
+function setupMixer() {
+  const wrap = $("track-mixer");
+  if (refAudio) { refAudio.pause(); refAudio.removeAttribute("src"); refAudio = null; }
+  const s = current && current.sync;
+  if (!s || !s.ref_path) {
+    wrap.hidden = true;
+    $("player").muted = false;
+    return;
+  }
+  wrap.hidden = false;
+  refAudio = new Audio(`/api/videos/${current.id}/sync-audio/file`);
+  refAudio.preload = "auto";
+  // default mirrors the export: recording audible, camera muted
+  recOn = true; camOn = false;
+  applyMix();
+  // show where the aligned recording sits on the video's timeline
+  const dur = current.meta.duration || 1;
+  const bar = $("rec-span");
+  bar.style.left = `${(s.offset / dur) * 100}%`;
+  bar.style.width = `${Math.min(100, (s.duration / dur) * 100)}%`;
+}
+
+function applyMix() {
+  $("player").muted = !camOn;
+  if (refAudio) refAudio.muted = !recOn;
+  $("trk-rec").classList.toggle("on", recOn);
+  $("trk-cam").classList.toggle("on", camOn);
+}
+
+$("trk-rec").onclick = () => { recOn = !recOn; applyMix(); };
+$("trk-cam").onclick = () => { camOn = !camOn; applyMix(); };
+
+function syncRefAudio() {
+  if (!refAudio || !current || !current.sync) return;
+  const p = $("player");
+  const t = p.currentTime - current.sync.offset; // video time -> recording time
+  if (t >= 0 && t <= current.sync.duration) {
+    if (Math.abs(refAudio.currentTime - t) > 0.15) refAudio.currentTime = t;
+    refAudio.playbackRate = p.playbackRate;
+    if (!p.paused && refAudio.paused) refAudio.play().catch(() => {});
+    if (p.paused && !refAudio.paused) refAudio.pause();
+  } else if (!refAudio.paused) {
+    refAudio.pause(); // playhead is outside the aligned span
+  }
+}
+
+for (const ev of ["play", "pause", "seeked", "timeupdate", "ratechange"]) {
+  $("player").addEventListener(ev, syncRefAudio);
+}
 
 /* -------------------------------------------------------------- lyrics */
 
