@@ -78,7 +78,7 @@ def make_proxy(src: str, dest: Path, height: int = PROXY_HEIGHT, progress=None) 
                 return dest
             dest.unlink()  # partial file, or proxy from an older lower-res version
         if progress:
-            progress("transcoding proxy")
+            progress("transcoding proxy", pct=5)
         tmp = dest.with_name(dest.name + ".part.mp4")
         base = ["ffmpeg", "-y", "-i", src, "-vf", f"scale=-2:{height}"]
         tail = ["-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(tmp)]

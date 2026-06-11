@@ -9,6 +9,8 @@ speech, and laughter. From those we derive:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from . import probe
@@ -21,6 +23,7 @@ _LAUGH_CLASSES = {"Laughter", "Giggle", "Snicker", "Chuckle, chortle", "Belly la
 _VOCAL_CLASSES = {
     "Singing", "Male singing", "Female singing", "Child singing",
     "Choir", "Synthetic singing", "Rapping", "Humming", "Yodeling", "Chant",
+    "Vocal music", "A capella", "Lullaby", "Mantra",
 }
 
 
@@ -34,7 +37,7 @@ def classify_audio(samples: np.ndarray, sample_rate: int) -> list[dict]:
 
     options = mp_audio.AudioClassifierOptions(
         base_options=mp_python.BaseOptions(model_asset_path=str(model_path("yamnet.tflite"))),
-        max_results=15,
+        max_results=30,
     )
     windows: list[dict] = []
     chunk_len = int(CHUNK_S * sample_rate)
@@ -302,8 +305,8 @@ def detect_beats(
 def find_vocal_segments(
     times: np.ndarray,
     vocals: np.ndarray,
-    on_threshold: float = 0.2,
-    off_threshold: float = 0.1,
+    on_threshold: float = 0.04,
+    off_threshold: float = 0.02,
     min_len_s: float = 2.0,
     merge_gap_s: float = 3.0,
 ) -> list[dict]:
@@ -313,6 +316,67 @@ def find_vocal_segments(
         times, smooth(vocals, 5), on_threshold, off_threshold, min_len_s, merge_gap_s
     )
     return [{"start": round(s, 2), "end": round(e, 2)} for s, e in segs]
+
+
+_TABS_GEN_DIR = Path(__file__).resolve().parent.parent.parent / "tabs-gen"
+_DEMUCS_EXE = _TABS_GEN_DIR / ".venv" / "bin" / "demucs"
+
+
+def demucs_vocal_track(
+    audio_path: str,
+    time_offset: float = 0.0,
+    hop_s: float = WINDOW_S,
+) -> tuple[list[float], list[float]]:
+    """Separate vocals with Demucs and return an energy-based vocal track.
+
+    Uses the demucs binary from the sibling tabs-gen project.
+    Returns (times, energies) where energies are RMS values (0..1 scale)
+    aligned to ~1s windows, suitable for find_vocal_segments and as a
+    vocal_track for build_smart_cutlist.
+    """
+    import subprocess
+    import tempfile
+
+    if not _DEMUCS_EXE.exists():
+        raise RuntimeError(f"demucs not found at {_DEMUCS_EXE}")
+
+    audio_path = str(audio_path)
+    with tempfile.TemporaryDirectory() as tmp:
+        cmd = [
+            str(_DEMUCS_EXE),
+            "-n", "htdemucs",
+            "-d", "mps",
+            "--two-stems", "vocals",
+            "--out", tmp,
+            audio_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"demucs failed: {result.stderr[-500:]}")
+
+        # demucs writes to: tmp/htdemucs/<track_name>/vocals.wav
+        model_dir = Path(tmp) / "htdemucs"
+        stem_dirs = list(model_dir.iterdir()) if model_dir.exists() else []
+        if not stem_dirs:
+            return [], []
+        vocals_wav = stem_dirs[0] / "vocals.wav"
+        if not vocals_wav.exists():
+            return [], []
+        samples = probe.extract_audio(str(vocals_wav))
+
+    sr = probe.AUDIO_SR
+    hop = int(hop_s * sr)
+    n = len(samples) // hop
+    if n == 0:
+        return [], []
+    frames = samples[: n * hop].reshape(n, hop)
+    rms = np.sqrt(np.mean(frames**2, axis=1))
+    peak = rms.max()
+    if peak > 0:
+        rms = rms / peak
+    times = [round(time_offset + i * hop_s, 3) for i in range(n)]
+    energies = [round(float(v), 4) for v in rms]
+    return times, energies
 
 
 def find_laughs(
@@ -338,14 +402,14 @@ def find_laughs(
 def analyze(source: str, progress=None) -> dict:
     """Full audio pass: songs, highlights, laugh candidates, raw windows."""
     if progress:
-        progress("decoding audio")
+        progress("decoding audio", pct=0)
     samples = probe.extract_audio(source)
     if len(samples) == 0:
         return {"songs": [], "highlights": [], "laughs": [], "vocal_segments": [],
                 "beats": [], "tempo": 0.0, "windows": []}
 
     if progress:
-        progress("classifying audio (YAMNet)")
+        progress("classifying audio (YAMNet)", pct=20)
     windows = classify_audio(samples, probe.AUDIO_SR)
     if not windows:
         return {"songs": [], "highlights": [], "laughs": [], "vocal_segments": [],
@@ -360,13 +424,13 @@ def analyze(source: str, progress=None) -> dict:
     times, music, laugh, vocals, energy = times[:n], music[:n], laugh[:n], vocals[:n], energy[:n]
 
     if progress:
-        progress("segmenting songs")
+        progress("segmenting songs", pct=60)
     songs = segments_from_scores(
         times, music, on_threshold=0.35, off_threshold=0.2,
         min_len_s=30.0, merge_gap_s=12.0,
     )
     if progress:
-        progress("tracking beats")
+        progress("tracking beats", pct=80)
     beats, tempo = detect_beats(samples, probe.AUDIO_SR, songs)
     return {
         "songs": [{"start": round(s, 2), "end": round(e, 2)} for s, e in songs],

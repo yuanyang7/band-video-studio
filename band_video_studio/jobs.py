@@ -13,13 +13,18 @@ _lock = threading.Lock()
 
 def submit(kind: str, fn: Callable[..., Any], *args, **kwargs) -> dict:
     job_id = uuid.uuid4().hex[:12]
-    job = {"id": job_id, "kind": kind, "status": "running", "progress": "", "result": None, "error": None}
+    job = {"id": job_id, "kind": kind, "status": "running", "progress": "", "pct": None, "result": None, "error": None}
     with _lock:
         _jobs[job_id] = job
 
+    def _progress(msg: str, pct: float | None = None):
+        job["progress"] = msg
+        if pct is not None:
+            job["pct"] = max(0, min(100, pct))
+
     def run():
         try:
-            job["result"] = fn(*args, progress=lambda msg: job.update(progress=msg), **kwargs)
+            job["result"] = fn(*args, progress=_progress, **kwargs)
             job["status"] = "done"
         except Exception as e:  # surface the full traceback to the API
             job["status"] = "error"

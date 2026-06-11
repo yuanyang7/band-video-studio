@@ -31,6 +31,16 @@ label { display: block; margin: 4px 0; }
 }
 #video-list li.active { background: #2d3b63; }
 #job-status { font-size: 12px; color: #f6c343; min-height: 18px; }
+#job-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#job-bar-wrap {
+  margin-top: 4px; height: 6px; background: #2a2d35; border-radius: 3px;
+  overflow: hidden;
+}
+#job-bar {
+  height: 100%; width: 0%; border-radius: 3px;
+  background: linear-gradient(90deg, #3b6ef6, #6db3f2);
+  transition: width 0.4s ease;
+}
 
 #main, #library-view { flex: 1; padding: 16px; min-width: 0; }
 

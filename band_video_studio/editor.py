@@ -17,6 +17,10 @@ import numpy as np
 PRESETS = {
     "horizontal": (1920, 1080),
     "vertical": (1080, 1920),
+    "horizontal_2k": (2560, 1440),
+    "vertical_2k": (1440, 2560),
+    "horizontal_4k": (3840, 2160),
+    "vertical_4k": (2160, 3840),
 }
 
 
@@ -26,8 +30,34 @@ def is_pano(box: dict, target_aspect: float) -> bool:
     return (box["w"] / h) >= 1.3 * target_aspect
 
 
-def fit_crop(box: dict, src_w: int, src_h: int, target_aspect: float) -> tuple[int, int, int, int]:
+def _face_penalty(x: float, y: float, w: float, h: float,
+                   faces: list[dict], src_w: int, src_h: int) -> float:
+    """How much of the avoid-faces list falls inside the crop rectangle."""
+    penalty = 0.0
+    for f in faces:
+        fx, fy = f["cx"] * src_w, f["cy"] * src_h
+        if x <= fx <= x + w and y <= fy <= y + h:
+            # face is inside crop — penalty proportional to how deep inside
+            dx = min(fx - x, x + w - fx) / w
+            dy = min(fy - y, y + h - fy) / h
+            penalty += min(dx, dy) + 0.5  # 0.5 base + depth bonus
+    return penalty
+
+
+def fit_crop(
+    box: dict, src_w: int, src_h: int, target_aspect: float,
+    out_w: int = 0, out_h: int = 0,
+    max_upscale: float = 2.0,
+    avoid_faces: list[dict] | None = None,
+) -> tuple[int, int, int, int]:
     """Adjust a normalized box to the target aspect, centered and clamped.
+
+    When out_w/out_h are given, the crop is enlarged if needed so we never
+    upscale beyond max_upscale (avoids blurry output from tiny boxes).
+
+    When avoid_faces is given (list of {cx, cy} in normalized 0..1 coords),
+    the crop is shifted away from those faces while keeping the target
+    player centered.
 
     Returns integer (x, y, w, h) in source pixels, even-valued for yuv420.
     """
@@ -41,11 +71,32 @@ def fit_crop(box: dict, src_w: int, src_h: int, target_aspect: float) -> tuple[i
         h = w / target_aspect
     else:
         w = h * target_aspect
+    # enforce minimum crop size: at most max_upscale to the output
+    if out_w and out_h:
+        min_w = out_w / max_upscale
+        min_h = out_h / max_upscale
+        if w < min_w or h < min_h:
+            grow = max(min_w / w, min_h / h)
+            w, h = w * grow, h * grow
     # clamp inside the frame, preserving aspect by shrinking if needed
     scale = min(1.0, src_w / w, src_h / h)
     w, h = w * scale, h * scale
     x = min(max(cx - w / 2, 0), src_w - w)
     y = min(max(cy - h / 2, 0), src_h - h)
+
+    # nudge away from other players' faces
+    if avoid_faces:
+        best_x, best_penalty = x, _face_penalty(x, y, w, h, avoid_faces, src_w, src_h)
+        # try shifting left and right in small steps
+        max_shift = w * 0.3
+        for sign in (-1, 1):
+            for step in (0.05, 0.1, 0.15, 0.2, 0.25, 0.3):
+                nx = cx + sign * max_shift * (step / 0.3) - w / 2
+                nx = min(max(nx, 0), src_w - w)
+                pen = _face_penalty(nx, y, w, h, avoid_faces, src_w, src_h)
+                if pen < best_penalty:
+                    best_x, best_penalty = nx, pen
+        x = best_x
 
     even = lambda v: int(v) // 2 * 2
     return even(x), even(y), even(w), even(h)
@@ -149,6 +200,7 @@ def build_smart_cutlist(
 
     cuts: list[dict] = []
     screen_time = {v: 0.0 for v in views}
+    last_seen = {v: start for v in views}
     t, prev = start, None
     last_wide = start
     while t < end - 1e-3:
@@ -166,19 +218,16 @@ def build_smart_cutlist(
 
         choices = [v for v in views if v != prev] or views
         best_view, best_score, best_reason = choices[0], -1e9, "motion"
-        # for peak/instrumental routing: which candidate is most active right now
         most_active = max(choices, key=lambda v: _activity_at(activity, v, mid))
         for v in choices:
             score = w_motion * _activity_at(activity, v, mid)
             reason = "motion"
-            if v in singer_views and vocal_level > 0.12:
-                # someone is singing right now — favour the singer, more so the
-                # stronger (more emotive) the vocal is
-                score += w_vocal * min(1.0, vocal_level / 0.4)
+            if v in singer_views and vocal_level > 0.02:
+                score += w_vocal * min(1.0, vocal_level / 0.08)
                 reason = "vocals->singer"
             for e in overlapping:
                 if e["type"] == "vocal_start" and v in singer_views:
-                    score += w_audio  # the singer just came in — cut to them
+                    score += w_audio
                     reason = "vocal-start->singer"
                 elif e["type"] == "fun" and v in pano_views:
                     score += w_audio
@@ -191,14 +240,23 @@ def build_smart_cutlist(
             if wide_due and v in pano_views:
                 score += w_wide
                 reason = "wide-refresh"
+            # evenness: penalize overrepresented, boost starved
             score -= even_weight * max(0.0, screen_time[v] - fair) / switch_s
-            score += rng.uniform(0, 1e-3)  # deterministic tie-break
+            score += even_weight * max(0.0, fair - screen_time[v]) / switch_s * 0.5
+            # recency: boost views not seen for a while
+            gap = t - last_seen[v]
+            if gap > switch_s * len(views):
+                score += even_weight * min(gap / (switch_s * len(views)), 2.0)
+                if reason == "motion":
+                    reason = "recency"
+            score += rng.uniform(0, 1e-3)
             if score > best_score:
                 best_view, best_score, best_reason = v, score, reason
 
         cuts.append({"start": round(t, 3), "end": round(cut_end, 3),
                      "view": best_view, "reason": best_reason})
         screen_time[best_view] += cut_end - t
+        last_seen[best_view] = cut_end
         if best_view in pano_views:
             last_wide = cut_end
         prev, t = best_view, cut_end
@@ -300,6 +358,10 @@ def render(
     out_path: Path,
     camera_motion: bool = False,
     transitions: bool = False,
+    sharpen: bool = False,
+    denoise: bool = False,
+    max_upscale: float = 2.0,
+    face_map: dict[str, list[dict]] | None = None,
     fps: float = 30.0,
     seed: int | None = None,
     audio_source: str | None = None,
@@ -321,7 +383,17 @@ def render(
     out_w, out_h = PRESETS[orientation]
     target_aspect = out_w / out_h
 
-    px_crops = {name: fit_crop(box, src_w, src_h, target_aspect) for name, box in crops.items()}
+    denoi = ",hqdn3d=4:3:6:4" if denoise else ""
+    sharp = ",unsharp=5:5:0.8:3:3:0.4" if sharpen else ""
+    # faces belonging to OTHER views that this view should try to exclude
+    all_faces = face_map or {}
+    all_other = {name: [f for other, fl in all_faces.items() if other != name for f in fl]
+                 for name in crops}
+    px_crops = {
+        name: fit_crop(box, src_w, src_h, target_aspect, out_w, out_h,
+                       max_upscale=max_upscale, avoid_faces=all_other.get(name))
+        for name, box in crops.items()
+    }
     pano_px = {
         name: (_even(box["x"] * src_w), _even(box["y"] * src_h),
                _even(box["w"] * src_w), _even(box["h"] * src_h))
@@ -363,9 +435,9 @@ def render(
                 chain = drift_filter((x, y, w, h), n, out_w, out_h, fps, seed=(seed or 0) + i)
             if chain is None:  # static shot inside motion mode — keep fps uniform
                 chain = f"crop={w}:{h}:{x}:{y},scale={out_w}:{out_h}"
-            filters.append(f"{pre}{chain},fps={fps},setsar=1[v{i}]")
+            filters.append(f"{pre}{chain}{denoi}{sharp},fps={fps},setsar=1[v{i}]")
         else:
-            filters.append(f"{pre}crop={w}:{h}:{x}:{y},scale={out_w}:{out_h},setsar=1[v{i}]")
+            filters.append(f"{pre}crop={w}:{h}:{x}:{y},scale={out_w}:{out_h}{denoi}{sharp},setsar=1[v{i}]")
         labels.append(f"[v{i}]")
     seg_start, seg_end = cuts[0]["start"], cuts[-1]["end"]
     filters.append(f"{''.join(labels)}concat=n={len(cuts)}:v=1:a=0[vout]")
@@ -382,7 +454,7 @@ def render(
         filters.append(f"[{audio_idx}:a]atrim=start={seg_start}:end={seg_end},asetpts=PTS-STARTPTS[aout]")
 
     if progress:
-        progress(f"rendering {len(cuts)} cuts ({orientation})")
+        progress(f"rendering {len(cuts)} cuts ({orientation})", pct=80)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg", "-y", *inputs,

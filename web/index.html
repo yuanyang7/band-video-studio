@@ -38,7 +38,12 @@
       <button id="lib-best">🌍 Best moments</button>
     </div>
   </section>
-  <div id="job-status"></div>
+  <div id="job-status">
+    <div id="job-text"></div>
+    <div id="job-bar-wrap" hidden>
+      <div id="job-bar"></div>
+    </div>
+  </div>
 </aside>
 
 <main id="library-view" hidden>
@@ -103,6 +108,10 @@
       <h2>Shooting simulation</h2>
       <p class="hint">Simulates a multi-camera shoot from the fixed wide shot: drag a box per player, give it a name and (optionally) a role. The cut switches between these virtual cameras — singer when the vocal comes in, soloist on peaks, the wide view at regular beats.</p>
       <button id="grab-frame">Grab frame at playhead</button>
+      <div class="row">
+        <label>max upscale <input type="range" id="max-upscale" min="1.2" max="4" step="0.1" value="2"> <span id="max-upscale-val">2.0</span>x</label>
+        <span class="hint">(lower = larger crop, less blur)</span>
+      </div>
       <div id="crop-wrap"><canvas id="crop-canvas"></canvas></div>
       <ul id="crop-list"></ul>
       <button id="save-crops">Save cameras</button>
@@ -112,6 +121,8 @@
       <label><input type="checkbox" id="opt-smart" checked> smart switching (who's playing/singing, beat-aligned)</label>
       <label><input type="checkbox" id="opt-motion"> natural camera movement (drift / push-in / pano pan)</label>
       <label><input type="checkbox" id="opt-transitions" checked> connecting transitions (glide between views)</label>
+      <label><input type="checkbox" id="opt-sharpen"> sharpen (recover detail after crop upscale)</label>
+      <label><input type="checkbox" id="opt-denoise"> denoise (reduce grain from low light)</label>
     </section>
 
     <section class="panel">
@@ -135,8 +146,12 @@
     </div>
     <div class="row">
       <select id="edit-orientation">
-        <option value="horizontal">horizontal 16:9</option>
-        <option value="vertical">vertical 9:16</option>
+        <option value="horizontal">horizontal 1080p</option>
+        <option value="horizontal_2k">horizontal 2K</option>
+        <option value="horizontal_4k">horizontal 4K</option>
+        <option value="vertical">vertical 1080p</option>
+        <option value="vertical_2k">vertical 2K</option>
+        <option value="vertical_4k">vertical 4K</option>
       </select>
       <input type="text" id="export-name" placeholder="file name (optional)">
       <button id="export-btn">Export</button>

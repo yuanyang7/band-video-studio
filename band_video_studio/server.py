@@ -6,6 +6,8 @@ import re
 import shutil
 from pathlib import Path
 
+import numpy as np
+
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -251,8 +253,24 @@ class EditBody(BaseModel):
     smart: bool = True               # content-aware, beat-aligned switching
     camera_motion: bool = False      # subtle handheld drift / push-in / pano pan
     transitions: bool = True         # glide between views (connects the scene)
+    sharpen: bool = False            # unsharp-mask to recover detail after crop upscale
+    denoise: bool = False            # temporal denoise for low-light footage
+    max_upscale: float = 2.0         # max upscale factor for crop boxes
     name: str | None = None          # optional output filename (sans extension)
     seed: int | None = None
+
+
+def _vocal_segments(analysis: dict) -> list[dict]:
+    """Return vocal_segments, deriving from windows if the key is missing (old analyses)."""
+    segs = analysis.get("vocal_segments")
+    if segs:
+        return segs
+    windows = analysis.get("windows") or []
+    if not windows:
+        return []
+    times = np.array([w["t"] for w in windows])
+    vocals = np.array([w.get("vocals", 0.0) for w in windows])
+    return audio.find_vocal_segments(times, vocals)
 
 
 def _events_from_analysis(analysis: dict | None, start: float, end: float) -> list[dict]:
@@ -265,10 +283,6 @@ def _events_from_analysis(analysis: dict | None, start: float, end: float) -> li
                        "type": "instrumental" if h.get("kind") == "instrumental" else "peak"})
     for m in analysis.get("fun_moments", []):
         events.append({"start": m["start"], "end": m["end"], "type": "fun"})
-    # singing entrances: cut to the singer just as the vocal comes in
-    for seg in analysis.get("vocal_segments", []):
-        events.append({"start": seg["start"], "end": min(seg["end"], seg["start"] + 5.0),
-                       "type": "vocal_start"})
     return [e for e in events if e["start"] < end and e["end"] > start]
 
 
@@ -303,7 +317,7 @@ def make_edit(video_id: str, body: EditBody):
     if not views or any(v not in crops for v in views):
         raise HTTPException(400, "define crops first (or unknown view name)")
     if body.orientation not in editor.PRESETS:
-        raise HTTPException(400, "orientation must be horizontal or vertical")
+        raise HTTPException(400, f"orientation must be one of {list(editor.PRESETS)}")
 
     def run(progress=None):
         analysis = store.load_artifact(video_id, "analysis")
@@ -329,30 +343,92 @@ def make_edit(video_id: str, body: EditBody):
             proxy = str(store.video_dir(video_id) / "proxy.mp4")
             view_crops = {v: crops[v] for v in views}
             if progress:
-                progress("measuring per-view motion")
+                progress("measuring per-view motion", pct=10)
             tracks = detect.view_activity(proxy, view_crops, start, end)
             activity = detect.activity_scores(tracks)
             pano = {v for v in views
                     if (crops[v].get("role") or "").lower() == "wide"
                     or editor.is_pano(crops[v], out_w / out_h)}
-            windows = (analysis or {}).get("windows") or []
-            vocal_track = (
-                ([w["t"] for w in windows], [w.get("vocals", 0.0) for w in windows])
-                if windows else None
-            )
+
+            # vocal detection: Demucs separation > YAMNet on clean rec > YAMNet on camera
+            vocal_track = None
+            vocal_segs: list[dict] = []
+            vocal_method = "none"
+            if audio_source:
+                try:
+                    if progress:
+                        progress("separating vocals with Demucs", pct=30)
+                    times, energies = audio.demucs_vocal_track(
+                        audio_source, time_offset=audio_offset,
+                    )
+                    if times:
+                        vocal_track = (times, energies)
+                        vocal_segs = audio.find_vocal_segments(
+                            np.array(times), np.array(energies),
+                            on_threshold=0.15, off_threshold=0.05,
+                        )
+                        vocal_method = "demucs"
+                except Exception:
+                    if progress:
+                        progress("Demucs unavailable, falling back to YAMNet", pct=30)
+            if not vocal_track and audio_source:
+                ref_windows = audio.classify_audio(
+                    probe.extract_audio(audio_source), probe.AUDIO_SR,
+                )
+                if ref_windows:
+                    ref_vocals = np.array([w.get("vocals", 0.0) for w in ref_windows])
+                    ref_times = np.array([w["t"] + audio_offset for w in ref_windows])
+                    vocal_track = (ref_times.tolist(), ref_vocals.tolist())
+                    vocal_segs = audio.find_vocal_segments(ref_times, ref_vocals)
+                    vocal_method = "yamnet-clean"
+            if not vocal_track:
+                windows = (analysis or {}).get("windows") or []
+                if windows:
+                    vocal_track = (
+                        [w["t"] for w in windows],
+                        [w.get("vocals", 0.0) for w in windows],
+                    )
+                    vocal_segs = _vocal_segments(analysis)
+                    vocal_method = "yamnet-camera"
+
+            singers = _singer_views(crops, views)
+            events = _events_from_analysis(analysis, start, end)
+            for seg in vocal_segs:
+                events.append({"start": seg["start"],
+                               "end": min(seg["end"], seg["start"] + 5.0),
+                               "type": "vocal_start"})
+            events = [e for e in events if e["start"] < end and e["end"] > start]
+            if progress:
+                progress(
+                    f"smart cut: {len(views)} views, "
+                    f"singers={singers or 'none'}, "
+                    f"pano={pano or 'none'}, "
+                    f"vocal_track={vocal_method}, "
+                    f"{len(vocal_segs)} vocal segs, "
+                    f"{len(events)} events",
+                    pct=60,
+                )
             cuts = editor.build_smart_cutlist(
                 views, start, end,
                 switch_s=body.switch_s,
                 beats=(analysis or {}).get("beats"),
-                events=_events_from_analysis(analysis, start, end),
+                events=events,
                 activity=activity, pano_views=pano,
-                singer_views=_singer_views(crops, views),
+                singer_views=singers,
                 vocal_track=vocal_track,
                 centers={v: crops[v]["x"] + crops[v]["w"] / 2 for v in views},
                 seed=body.seed,
             )
         else:
             cuts = editor.build_cutlist(views, start, end, body.switch_s, body.seed)
+        # detect faces and assign to views so crops can avoid other players
+        if progress:
+            progress("detecting faces for crop avoidance")
+        proxy = str(store.video_dir(video_id) / "proxy.mp4")
+        mid_t = (start + end) / 2
+        faces = detect.detect_face_boxes(proxy, mid_t)
+        face_map = detect.assign_faces_to_views(faces, crops) if faces else {}
+
         out = store.video_dir(video_id) / "exports" / _export_filename(
             body, start, end, bool(audio_source)
         )
@@ -360,10 +436,15 @@ def make_edit(video_id: str, body: EditBody):
             video["source_path"], video["meta"]["width"], video["meta"]["height"],
             crops, cuts, body.orientation, out,
             camera_motion=body.camera_motion, transitions=body.transitions,
+            sharpen=body.sharpen, denoise=body.denoise,
+            max_upscale=body.max_upscale, face_map=face_map,
             fps=video["meta"].get("fps") or 30.0, seed=body.seed,
             audio_source=audio_source, audio_offset=audio_offset, progress=progress,
         )
-        return {"file": out.name, "cuts": len(cuts), "synced": bool(audio_source)}
+        return {
+            "file": out.name, "cuts": len(cuts), "synced": bool(audio_source),
+            "cut_details": cuts,
+        }
 
     return jobs.submit("edit", run)
 
@@ -440,7 +521,7 @@ def scan_library(body: ScanBody | None = None):
 
     def run(progress=None):
         if progress:
-            progress("scanning folders")
+            progress("scanning folders", pct=0)
         existing = {v["source_path"] for v in store.list_videos()}
         new_files = library.find_new(library.scan_folders(folders), existing)
         batch = new_files[:limit] if limit else new_files
@@ -448,13 +529,13 @@ def scan_library(body: ScanBody | None = None):
         for i, path in enumerate(batch):
             label = f"{path.name} ({i + 1}/{len(batch)})"
             if progress:
-                progress(f"importing {label}")
+                progress(f"importing {label}", pct=int(((i) / max(len(batch), 1)) * 100))
             try:
                 meta = probe.probe(str(path))
                 video = store.add_video(str(path), path.name, meta)
-                _prepare(video, progress=lambda msg: progress and progress(f"{label}: {msg}"))
+                _prepare(video, progress=lambda msg, **kw: progress and progress(f"{label}: {msg}", **kw))
                 _run_analysis(video, AnalyzeBody(),
-                              progress=lambda msg: progress and progress(f"{label}: {msg}"))
+                              progress=lambda msg, **kw: progress and progress(f"{label}: {msg}", **kw))
                 imported.append(video["name"])
             except Exception as e:
                 failed.append({"file": str(path), "error": str(e).split("\n")[0]})

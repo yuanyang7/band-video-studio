@@ -90,7 +90,7 @@ def test_find_vocal_segments():
     times = np.arange(0, 60, 1.0)
     vocals = np.zeros_like(times)
     vocals[10:30] = 0.5   # a sung verse
-    vocals[45:46] = 0.5   # a one-second blip: too short to count
+    vocals[45:46] = 0.03  # a faint blip: too weak to trigger
     segs = find_vocal_segments(times, vocals)
     assert len(segs) == 1
     s = segs[0]

@@ -20,18 +20,27 @@ const safe = (fn) => async (...args) => {
 /* ---------------------------------------------------------------- jobs */
 
 async function watchJob(jobId, then) {
-  const el = $("job-status");
+  const text = $("job-text");
+  const barWrap = $("job-bar-wrap");
+  const bar = $("job-bar");
   const poll = async () => {
     const job = await api(`/jobs/${jobId}`);
     if (job.status === "running") {
-      el.textContent = `⏳ ${job.kind}: ${job.progress || "working"}…`;
+      text.textContent = `⏳ ${job.kind}: ${job.progress || "working"}…`;
+      if (job.pct != null) {
+        barWrap.hidden = false;
+        bar.style.width = `${job.pct}%`;
+      }
       setTimeout(poll, 1500);
     } else if (job.status === "done") {
-      el.textContent = `✅ ${job.kind} done`;
-      setTimeout(() => (el.textContent = ""), 4000);
+      text.textContent = `✅ ${job.kind} done`;
+      bar.style.width = "100%";
+      setTimeout(() => { text.textContent = ""; barWrap.hidden = true; bar.style.width = "0%"; }, 4000);
       then && then(job);
     } else {
-      el.textContent = `❌ ${job.kind} failed`;
+      text.textContent = `❌ ${job.kind} failed`;
+      barWrap.hidden = true;
+      bar.style.width = "0%";
       console.error(job.error);
       alert(`${job.kind} failed:\n` + job.error.split("\n")[0]);
     }
@@ -86,7 +95,7 @@ $("upload-file").onchange = async () => {
   if (!file) return;
   const form = new FormData();
   form.append("file", file);
-  $("job-status").textContent = "⏳ uploading…";
+  $("job-text").textContent = "⏳ uploading…";
   const res = await fetch("/api/videos/upload", { method: "POST", body: form });
   const { video, job } = await res.json();
   watchJob(job, () => openVideo(video.id));
@@ -127,9 +136,9 @@ $("lib-scan").onclick = safe(async () => {
       r.failed && r.failed.length ? `${r.failed.length} skipped` : "",
       r.remaining ? `${r.remaining} left for the next scan` : "",
     ].filter(Boolean).join(", ");
-    $("job-status").textContent = `✅ scan: ${(r.imported || []).length} imported${extra ? ` (${extra})` : ""}`;
+    $("job-text").textContent = `✅ scan: ${(r.imported || []).length} imported${extra ? ` (${extra})` : ""}`;
     if (r.failed && r.failed.length) console.warn("library scan skipped files:", r.failed);
-    setTimeout(() => ($("job-status").textContent = ""), 8000);
+    setTimeout(() => ($("job-text").textContent = ""), 8000);
     refreshList();
   });
 });
@@ -358,6 +367,30 @@ $("grab-frame").onclick = async () => {
   frameImg.src = `/api/videos/${current.id}/frame?t=${t}&_=${Date.now()}`;
 };
 
+function effectiveCrop(b) {
+  const orient = $("edit-orientation").value;
+  const presets = {
+    horizontal: [1920,1080], horizontal_2k: [2560,1440], horizontal_4k: [3840,2160],
+    vertical: [1080,1920], vertical_2k: [1440,2560], vertical_4k: [2160,3840],
+  };
+  const [outW, outH] = presets[orient] || [1920, 1080];
+  const tgt = outW / outH;
+  const maxUp = parseFloat($("max-upscale").value) || 2;
+  const cw = cropCanvas.width, ch = cropCanvas.height;
+  let w = Math.max(b.w * cw, 16), h = Math.max(b.h * ch, 16);
+  let cx = b.x * cw + w / 2, cy = b.y * ch + h / 2;
+  if (w / h > tgt) h = w / tgt; else w = h * tgt;
+  const srcW = current ? current.meta.width : cw;
+  const srcH = current ? current.meta.height : ch;
+  const scale = cw / srcW;
+  const minW = (outW / maxUp) * scale, minH = (outH / maxUp) * scale;
+  if (w < minW || h < minH) { const g = Math.max(minW / w, minH / h); w *= g; h *= g; }
+  const s = Math.min(1, cw / w, ch / h); w *= s; h *= s;
+  const x = Math.min(Math.max(cx - w / 2, 0), cw - w);
+  const y = Math.min(Math.max(cy - h / 2, 0), ch - h);
+  return { x, y, w, h };
+}
+
 function drawCrops() {
   if (!frameImg) return;
   const ctx = cropCanvas.getContext("2d");
@@ -365,10 +398,17 @@ function drawCrops() {
   ctx.lineWidth = 3;
   ctx.font = "16px sans-serif";
   for (const [name, b] of Object.entries(crops)) {
+    // user-drawn box
     ctx.strokeStyle = "#3b6ef6";
     ctx.strokeRect(b.x * cropCanvas.width, b.y * cropCanvas.height, b.w * cropCanvas.width, b.h * cropCanvas.height);
     ctx.fillStyle = "#3b6ef6";
     ctx.fillText(name, b.x * cropCanvas.width + 4, b.y * cropCanvas.height + 18);
+    // effective output crop (dashed)
+    const ec = effectiveCrop(b);
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = "#f6c343";
+    ctx.strokeRect(ec.x, ec.y, ec.w, ec.h);
+    ctx.setLineDash([]);
   }
   if (dragBox) {
     ctx.strokeStyle = "#f6c343";
@@ -439,9 +479,15 @@ $("save-crops").onclick = async () => {
     method: "PUT", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ crops }),
   });
-  $("job-status").textContent = "✅ crops saved";
-  setTimeout(() => ($("job-status").textContent = ""), 3000);
+  $("job-text").textContent = "✅ crops saved";
+  setTimeout(() => ($("job-text").textContent = ""), 3000);
 };
+
+$("max-upscale").oninput = () => {
+  $("max-upscale-val").textContent = parseFloat($("max-upscale").value).toFixed(1);
+  drawCrops();
+};
+$("edit-orientation").onchange = () => drawCrops();
 
 /* -------------------------------------------------------------- export */
 
@@ -463,6 +509,9 @@ $("export-btn").onclick = safe(async () => {
     smart: $("opt-smart").checked,
     camera_motion: $("opt-motion").checked,
     transitions: $("opt-transitions").checked,
+    sharpen: $("opt-sharpen").checked,
+    denoise: $("opt-denoise").checked,
+    max_upscale: parseFloat($("max-upscale").value) || 2,
     name: $("export-name").value.trim() || null,
   });
   watchJob(job.id, refreshExports);
@@ -508,7 +557,7 @@ $("sync-btn").onclick = safe(async () => {
   if (!file) { alert("Choose an audio recording first."); return; }
   const form = new FormData();
   form.append("file", file);
-  $("job-status").textContent = "⏳ uploading recording…";
+  $("job-text").textContent = "⏳ uploading recording…";
   const res = await fetch(`/api/videos/${current.id}/sync-audio`, { method: "POST", body: form });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
   const job = await res.json();
