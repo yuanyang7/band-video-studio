@@ -318,21 +318,54 @@ def find_vocal_segments(
     return [{"start": round(s, 2), "end": round(e, 2)} for s, e in segs]
 
 
+def find_stem_segments(
+    times: np.ndarray,
+    energies: np.ndarray,
+    on_threshold: float = 0.08,
+    off_threshold: float = 0.03,
+    min_len_s: float = 2.0,
+    merge_gap_s: float = 3.0,
+) -> list[dict]:
+    """Active stretches for an instrument stem (drums, bass, etc.)."""
+    segs = segments_from_scores(
+        times, smooth(energies, 5), on_threshold, off_threshold, min_len_s, merge_gap_s
+    )
+    return [{"start": round(s, 2), "end": round(e, 2)} for s, e in segs]
+
+
 _TABS_GEN_DIR = Path(__file__).resolve().parent.parent.parent / "tabs-gen"
 _DEMUCS_EXE = _TABS_GEN_DIR / ".venv" / "bin" / "demucs"
 
 
-def demucs_vocal_track(
+DEMUCS_STEMS = ("vocals", "drums", "bass", "other")
+
+
+def _rms_track(
+    samples: np.ndarray, sr: int, hop_s: float, time_offset: float,
+) -> tuple[list[float], list[float]]:
+    """RMS energy track (0..1 scale) aligned to ~1s windows."""
+    hop = int(hop_s * sr)
+    n = len(samples) // hop
+    if n == 0:
+        return [], []
+    frames = samples[: n * hop].reshape(n, hop)
+    rms = np.sqrt(np.mean(frames**2, axis=1))
+    peak = rms.max()
+    if peak > 0:
+        rms = rms / peak
+    times = [round(time_offset + i * hop_s, 3) for i in range(n)]
+    energies = [round(float(v), 4) for v in rms]
+    return times, energies
+
+
+def demucs_all_stems(
     audio_path: str,
     time_offset: float = 0.0,
     hop_s: float = WINDOW_S,
-) -> tuple[list[float], list[float]]:
-    """Separate vocals with Demucs and return an energy-based vocal track.
+) -> dict[str, tuple[list[float], list[float]]]:
+    """Full 4-stem Demucs separation returning energy tracks per stem.
 
-    Uses the demucs binary from the sibling tabs-gen project.
-    Returns (times, energies) where energies are RMS values (0..1 scale)
-    aligned to ~1s windows, suitable for find_vocal_segments and as a
-    vocal_track for build_smart_cutlist.
+    Returns {stem_name: (times, energies)} for vocals, drums, bass, other.
     """
     import subprocess
     import tempfile
@@ -346,7 +379,6 @@ def demucs_vocal_track(
             str(_DEMUCS_EXE),
             "-n", "htdemucs",
             "-d", "mps",
-            "--two-stems", "vocals",
             "--out", tmp,
             audio_path,
         ]
@@ -354,29 +386,33 @@ def demucs_vocal_track(
         if result.returncode != 0:
             raise RuntimeError(f"demucs failed: {result.stderr[-500:]}")
 
-        # demucs writes to: tmp/htdemucs/<track_name>/vocals.wav
         model_dir = Path(tmp) / "htdemucs"
         stem_dirs = list(model_dir.iterdir()) if model_dir.exists() else []
         if not stem_dirs:
-            return [], []
-        vocals_wav = stem_dirs[0] / "vocals.wav"
-        if not vocals_wav.exists():
-            return [], []
-        samples = probe.extract_audio(str(vocals_wav))
+            return {}
+        stem_dir = stem_dirs[0]
 
-    sr = probe.AUDIO_SR
-    hop = int(hop_s * sr)
-    n = len(samples) // hop
-    if n == 0:
-        return [], []
-    frames = samples[: n * hop].reshape(n, hop)
-    rms = np.sqrt(np.mean(frames**2, axis=1))
-    peak = rms.max()
-    if peak > 0:
-        rms = rms / peak
-    times = [round(time_offset + i * hop_s, 3) for i in range(n)]
-    energies = [round(float(v), 4) for v in rms]
-    return times, energies
+        tracks: dict[str, tuple[list[float], list[float]]] = {}
+        for stem in DEMUCS_STEMS:
+            wav = stem_dir / f"{stem}.wav"
+            if not wav.exists():
+                continue
+            samples = probe.extract_audio(str(wav))
+            tracks[stem] = _rms_track(samples, probe.AUDIO_SR, hop_s, time_offset)
+    return tracks
+
+
+def demucs_vocal_track(
+    audio_path: str,
+    time_offset: float = 0.0,
+    hop_s: float = WINDOW_S,
+) -> tuple[list[float], list[float]]:
+    """Separate vocals with Demucs and return an energy-based vocal track.
+
+    Convenience wrapper around demucs_all_stems for backwards compat.
+    """
+    tracks = demucs_all_stems(audio_path, time_offset, hop_s)
+    return tracks.get("vocals", ([], []))
 
 
 def find_laughs(

@@ -67,6 +67,8 @@ async function openVideo(id) {
   current = await api(`/videos/${id}`);
   crops = current.crops || {};
   sel = null;
+  cutList = null;
+  $("cutlist-wrap").style.display = "none";
   $("library-view").hidden = true;
   $("main").hidden = false;
   if (current.has_proxy) $("player").src = `/api/videos/${id}/stream`;
@@ -295,8 +297,8 @@ $("select-at-playhead").onclick = () => {
     setSelection(prevEnd, nextStart);
   }
 };
-$("player").ontimeupdate = drawTimeline;
-window.onresize = drawTimeline;
+$("player").ontimeupdate = () => { drawTimeline(); drawCutList(); };
+window.onresize = () => { drawTimeline(); drawCutList(); };
 
 /* ------------------------------------------------------------ analysis */
 
@@ -455,9 +457,12 @@ function renderCropList() {
     const li = document.createElement("li");
     li.innerHTML = `<span>${name}</span>
       <span class="crop-tools">
-        <select class="role" title="role: singer views get the cut when the vocal comes in; wide views return regularly">
+        <select class="role" title="role: determines which stem drives this view's cuts">
           <option value="">auto</option>
           <option value="singer">singer</option>
+          <option value="drums">drums</option>
+          <option value="bass">bass</option>
+          <option value="keys">keys</option>
           <option value="wide">wide / all</option>
         </select>
         <span class="del" title="remove">✕</span>
@@ -489,9 +494,128 @@ $("max-upscale").oninput = () => {
 };
 $("edit-orientation").onchange = () => drawCrops();
 
-/* -------------------------------------------------------------- export */
+/* ------------------------------------------------- simulate / cut list */
 
-$("export-btn").onclick = safe(async () => {
+const VIEW_COLORS = [
+  "#e06c75", "#61afef", "#98c379", "#e5c07b", "#c678dd",
+  "#56b6c2", "#be5046", "#d19a66", "#7ec8e3", "#c3e88d",
+];
+let cutList = null;        // [{start, end, view, reason}]
+let cutViews = [];         // available view names
+let cutStart = 0, cutEnd = 0;
+let draggingCutEdge = null; // {index, edge: "start"|"end"}
+
+function viewColor(view) {
+  const idx = cutViews.indexOf(view);
+  return VIEW_COLORS[idx % VIEW_COLORS.length];
+}
+
+function drawCutList() {
+  if (!cutList || !cutList.length) return;
+  const canvas = $("cutlist-canvas");
+  const ctx = canvas.getContext("2d");
+  const W = (canvas.width = canvas.clientWidth * devicePixelRatio);
+  const H = canvas.height;
+  const dur = cutEnd - cutStart || 1;
+  const x = (t) => ((t - cutStart) / dur) * W;
+  ctx.clearRect(0, 0, W, H);
+
+  for (const cut of cutList) {
+    const cx = x(cut.start), cw = Math.max(2, x(cut.end) - x(cut.start));
+    ctx.fillStyle = viewColor(cut.view);
+    ctx.fillRect(cx, 0, cw, H);
+    // edge lines
+    ctx.fillStyle = "rgba(0,0,0,0.4)";
+    ctx.fillRect(cx, 0, 1, H);
+    // label
+    const textW = cw / devicePixelRatio;
+    if (textW > 30) {
+      ctx.fillStyle = "#fff";
+      ctx.font = `${11 * devicePixelRatio}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const label = textW > 60 ? `${cut.view} (${cut.reason})` : cut.view;
+      ctx.fillText(label, cx + cw / 2, H / 2, cw - 4 * devicePixelRatio);
+    }
+  }
+  // playhead
+  if (current) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(x($("player").currentTime), 0, 2 * devicePixelRatio, H);
+  }
+}
+
+function renderCutLegend() {
+  const el = $("cutlist-legend");
+  el.innerHTML = "";
+  for (const v of cutViews) {
+    const span = document.createElement("span");
+    span.innerHTML = `<span class="swatch" style="background:${viewColor(v)}"></span>${v}`;
+    el.appendChild(span);
+  }
+}
+
+// click a segment to cycle its view
+$("cutlist-canvas").onclick = (e) => {
+  if (!cutList || draggingCutEdge) return;
+  const rect = e.target.getBoundingClientRect();
+  const dur = cutEnd - cutStart || 1;
+  const t = cutStart + ((e.clientX - rect.left) / rect.width) * dur;
+  const idx = cutList.findIndex(c => t >= c.start && t < c.end);
+  if (idx < 0) return;
+  const cur = cutViews.indexOf(cutList[idx].view);
+  cutList[idx].view = cutViews[(cur + 1) % cutViews.length];
+  cutList[idx].reason = "manual";
+  drawCutList();
+};
+
+// drag edges to adjust cut boundaries
+const cutEdgeAt = (e) => {
+  if (!cutList) return null;
+  const rect = $("cutlist-canvas").getBoundingClientRect();
+  const dur = cutEnd - cutStart || 1;
+  const cx = e.clientX - rect.left;
+  const px = (t) => ((t - cutStart) / dur) * rect.width;
+  for (let i = 0; i < cutList.length; i++) {
+    if (Math.abs(cx - px(cutList[i].start)) < 6 && i > 0) return {index: i, edge: "start"};
+    if (Math.abs(cx - px(cutList[i].end)) < 6 && i < cutList.length - 1) return {index: i, edge: "end"};
+  }
+  return null;
+};
+
+$("cutlist-canvas").onmousedown = (e) => {
+  draggingCutEdge = cutEdgeAt(e);
+};
+$("cutlist-canvas").onmousemove = (e) => {
+  if (!cutList) return;
+  if (draggingCutEdge) {
+    const rect = $("cutlist-canvas").getBoundingClientRect();
+    const dur = cutEnd - cutStart || 1;
+    const t = cutStart + ((e.clientX - rect.left) / rect.width) * dur;
+    const {index, edge} = draggingCutEdge;
+    const minLen = 0.5;
+    if (edge === "start") {
+      const lo = cutList[index - 1].start + minLen;
+      const hi = cutList[index].end - minLen;
+      const nt = Math.max(lo, Math.min(hi, t));
+      cutList[index].start = Math.round(nt * 100) / 100;
+      cutList[index - 1].end = cutList[index].start;
+    } else {
+      const lo = cutList[index].start + minLen;
+      const hi = cutList[index + 1].end - minLen;
+      const nt = Math.max(lo, Math.min(hi, t));
+      cutList[index].end = Math.round(nt * 100) / 100;
+      cutList[index + 1].start = cutList[index].end;
+    }
+    drawCutList();
+    e.preventDefault();
+  } else {
+    $("cutlist-canvas").style.cursor = cutEdgeAt(e) ? "ew-resize" : "pointer";
+  }
+};
+window.addEventListener("mouseup", () => { draggingCutEdge = null; });
+
+$("simulate-btn").onclick = safe(async () => {
   if (!current) return;
   if (!Object.keys(crops).length) {
     alert("Set up at least one camera first (Shooting simulation panel).");
@@ -502,11 +626,33 @@ $("export-btn").onclick = safe(async () => {
     alert("Pick an export range first — click a song on the timeline, or fill start/end.");
     return;
   }
-  const job = await post(`/videos/${current.id}/edit`, {
+  const job = await post(`/videos/${current.id}/simulate`, {
     start, end,
     orientation: $("edit-orientation").value,
     switch_s: parseFloat($("edit-switch").value || 4),
     smart: $("opt-smart").checked,
+  });
+  watchJob(job.id, (done) => {
+    const r = done.result || {};
+    cutList = r.cuts || [];
+    cutViews = r.views || Object.keys(crops);
+    cutStart = r.start || start;
+    cutEnd = r.end || end;
+    $("cutlist-wrap").style.display = "";
+    renderCutLegend();
+    drawCutList();
+  });
+});
+
+$("export-btn").onclick = safe(async () => {
+  if (!current || !cutList || !cutList.length) {
+    alert("Simulate first to generate a cut list, then export.");
+    return;
+  }
+  const job = await post(`/videos/${current.id}/edit`, {
+    start: cutStart, end: cutEnd,
+    cuts: cutList,
+    orientation: $("edit-orientation").value,
     camera_motion: $("opt-motion").checked,
     transitions: $("opt-transitions").checked,
     sharpen: $("opt-sharpen").checked,
@@ -538,7 +684,8 @@ function renderSync() {
   if (!s) return;
   const weak = s.confidence < 0.25 ? " ⚠️ weak match" : "";
   const span = document.createElement("span");
-  span.textContent = `✅ ${s.file} @ ${fmt(s.offset)}–${fmt(s.offset + s.duration)} (match ${s.confidence})${weak}. Export will use this audio.`;
+  const stems = (current.stems || []).length ? ` · stems: ${current.stems.join(", ")}` : "";
+  span.textContent = `✅ ${s.file} @ ${fmt(s.offset)}–${fmt(s.offset + s.duration)} (match ${s.confidence})${weak}${stems}. Export will use this audio.`;
   const useBtn = document.createElement("button");
   useBtn.textContent = "set range";
   useBtn.onclick = () => setSelection(s.offset, s.offset + s.duration);

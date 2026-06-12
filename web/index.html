@@ -106,7 +106,7 @@
 
     <section class="panel">
       <h2>Shooting simulation</h2>
-      <p class="hint">Simulates a multi-camera shoot from the fixed wide shot: drag a box per player, give it a name and (optionally) a role. The cut switches between these virtual cameras — singer when the vocal comes in, soloist on peaks, the wide view at regular beats.</p>
+      <p class="hint">Simulates a multi-camera shoot from the fixed wide shot: drag a box per player, give it a name and a role (singer / drums / bass / keys / wide). With a synced recording, Demucs separates each instrument — cuts follow whoever is playing. Enable "solo" to only show a player when their instrument is active.</p>
       <button id="grab-frame">Grab frame at playhead</button>
       <div class="row">
         <label>max upscale <input type="range" id="max-upscale" min="1.2" max="4" step="0.1" value="2"> <span id="max-upscale-val">2.0</span>x</label>
@@ -153,8 +153,16 @@
         <option value="vertical_2k">vertical 2K</option>
         <option value="vertical_4k">vertical 4K</option>
       </select>
-      <input type="text" id="export-name" placeholder="file name (optional)">
-      <button id="export-btn">Export</button>
+      <button id="simulate-btn">Simulate</button>
+    </div>
+    <div id="cutlist-wrap" style="display:none">
+      <p class="hint">Click a segment to change the view. Drag edges to adjust timing.</p>
+      <canvas id="cutlist-canvas" height="36"></canvas>
+      <div id="cutlist-legend"></div>
+      <div class="row">
+        <input type="text" id="export-name" placeholder="file name (optional)">
+        <button id="export-btn">Export</button>
+      </div>
     </div>
     <ul id="exports"></ul>
   </section>
