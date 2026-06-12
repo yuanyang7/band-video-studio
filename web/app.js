@@ -64,10 +64,13 @@ async function refreshList() {
 }
 
 async function openVideo(id) {
+  clearTimeout(settingsTimer);
+  clearTimeout(cropsTimer);
   current = await api(`/videos/${id}`);
   crops = current.crops || {};
   sel = null;
   cutList = null;
+  applySettings(current.settings || {});
   $("cutlist-wrap").style.display = "none";
   $("library-view").hidden = true;
   $("main").hidden = false;
@@ -104,10 +107,81 @@ $("upload-file").onchange = async () => {
   refreshList();
 };
 
+/* ---------------------------------------------- per-video settings cache
+   Every render/detection control is auto-saved (debounced) to the server as
+   a per-video artifact, and restored when the video is reopened. */
+
+const SETTING_IDS = [
+  "opt-fun", "opt-sweep", "opt-claude",                       // detection
+  "max-upscale", "edit-switch",                               // shooting sim
+  "opt-smart", "opt-motion", "opt-transitions", "opt-sharpen", "opt-denoise",
+  "edit-orientation", "edit-start", "edit-end", "export-name", // export
+];
+let settingsTimer = null, cropsTimer = null;
+let applyingSettings = false;
+
+function collectSettings() {
+  const s = {};
+  for (const id of SETTING_IDS) {
+    const el = $(id);
+    s[id] = el.type === "checkbox" ? el.checked : el.value;
+  }
+  return s;
+}
+
+function applySettings(s) {
+  applyingSettings = true;
+  for (const id of SETTING_IDS) {
+    if (!(id in s)) continue;
+    const el = $(id);
+    if (el.type === "checkbox") el.checked = !!s[id];
+    else el.value = s[id];
+  }
+  $("max-upscale-val").textContent = (parseFloat($("max-upscale").value) || 2).toFixed(1);
+  // restore the export range selection on the timeline
+  const start = parseFloat($("edit-start").value), end = parseFloat($("edit-end").value);
+  if (!isNaN(start) && !isNaN(end) && end > start) sel = { start, end };
+  applyingSettings = false;
+}
+
+function scheduleSettingsSave() {
+  if (!current || applyingSettings) return;
+  clearTimeout(settingsTimer);
+  const id = current.id;
+  settingsTimer = setTimeout(async () => {
+    try {
+      await api(`/videos/${id}/settings`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: collectSettings() }),
+      });
+    } catch (e) { console.warn("settings auto-save failed:", e.message); }
+  }, 600);
+}
+
+for (const id of SETTING_IDS) {
+  $(id).addEventListener("change", scheduleSettingsSave);
+  $(id).addEventListener("input", scheduleSettingsSave);
+}
+
+function scheduleCropsSave() {
+  if (!current) return;
+  clearTimeout(cropsTimer);
+  const id = current.id;
+  cropsTimer = setTimeout(async () => {
+    try {
+      await api(`/videos/${id}/crops`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ crops }),
+      });
+    } catch (e) { console.warn("crops auto-save failed:", e.message); }
+  }, 600);
+}
+
 /* -------------------------------------------------------------- library */
 
 async function refreshLibrary() {
   const lib = await api("/library");
+  if (document.activeElement !== $("output-dir")) $("output-dir").value = lib.output_dir || "";
   const ul = $("lib-folders");
   ul.innerHTML = "";
   for (const folder of lib.folders) {
@@ -126,6 +200,16 @@ $("lib-add").onclick = safe(async () => {
   if (!path) return;
   await post("/library/folders", { path });
   $("lib-folder").value = "";
+  refreshLibrary();
+});
+
+$("output-dir-save").onclick = safe(async () => {
+  await api("/library/output-dir", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: $("output-dir").value.trim() }),
+  });
+  $("job-text").textContent = "✅ output folder saved";
+  setTimeout(() => ($("job-text").textContent = ""), 3000);
   refreshLibrary();
 });
 
@@ -257,6 +341,7 @@ function setSelection(start, end) {
   $("edit-start").value = sel.start;
   $("edit-end").value = sel.end;
   drawTimeline();
+  scheduleSettingsSave();
 }
 
 timeline.onmousedown = (e) => {
@@ -444,6 +529,7 @@ cropCanvas.onmouseup = () => {
         w: dragBox.w / cropCanvas.width, h: dragBox.h / cropCanvas.height,
       };
       renderCropList();
+      scheduleCropsSave();
     }
   }
   dragStart = dragBox = null;
@@ -472,8 +558,9 @@ function renderCropList() {
     roleSel.onchange = () => {
       if (roleSel.value) crops[name].role = roleSel.value;
       else delete crops[name].role;
+      scheduleCropsSave();
     };
-    li.querySelector(".del").onclick = () => { delete crops[name]; renderCropList(); drawCrops(); };
+    li.querySelector(".del").onclick = () => { delete crops[name]; renderCropList(); drawCrops(); scheduleCropsSave(); };
     ul.appendChild(li);
   }
 }
@@ -660,7 +747,16 @@ $("export-btn").onclick = safe(async () => {
     max_upscale: parseFloat($("max-upscale").value) || 2,
     name: $("export-name").value.trim() || null,
   });
-  watchJob(job.id, refreshExports);
+  watchJob(job.id, (done) => {
+    refreshExports();
+    const r = done.result || {};
+    if (r.saved_to) {
+      $("job-text").textContent = `✅ exported → ${r.saved_to}`;
+      setTimeout(() => ($("job-text").textContent = ""), 8000);
+    } else if (r.save_error) {
+      alert(`Export rendered, but: ${r.save_error}`);
+    }
+  });
 });
 
 async function refreshExports() {

@@ -94,6 +94,7 @@ def get_video(video_id: str):
         "crops": store.load_artifact(video_id, "crops") or {},
         "lyrics": store.load_artifact(video_id, "lyrics"),
         "sync": store.load_artifact(video_id, "sync"),
+        "settings": store.load_artifact(video_id, "settings") or {},
         "stems": list(stems_data.keys()) if stems_data else [],
         "capabilities": {"claude": vision.available(), "lyrics": lyrics.available()},
     }
@@ -276,6 +277,22 @@ class CropsBody(BaseModel):
 def save_crops(video_id: str, body: CropsBody):
     _video_or_404(video_id)
     store.save_artifact(video_id, "crops", body.crops)
+    return {"ok": True}
+
+
+class SettingsBody(BaseModel):
+    settings: dict
+
+
+@app.put("/api/videos/{video_id}/settings")
+def save_settings(video_id: str, body: SettingsBody):
+    """Persist the UI's current settings (render options, export range, …).
+
+    The frontend auto-saves these on every change so reopening a video
+    restores exactly where the user left off.
+    """
+    _video_or_404(video_id)
+    store.save_artifact(video_id, "settings", body.settings)
     return {"ok": True}
 
 
@@ -564,10 +581,22 @@ def make_edit(video_id: str, body: RenderBody):
             fps=video["meta"].get("fps") or 30.0, seed=body.seed,
             audio_source=audio_source, audio_offset=audio_offset, progress=progress,
         )
-        return {
+        result = {
             "file": out.name, "cuts": len(cuts), "synced": synced,
             "cut_details": cuts,
         }
+        # copy the finished export to the user's output folder (e.g. ~/Downloads)
+        output_dir = (store.load_library().get("output_dir") or "").strip()
+        if output_dir:
+            try:
+                dest_dir = Path(output_dir).expanduser()
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / out.name
+                shutil.copy2(out, dest)
+                result["saved_to"] = str(dest)
+            except OSError as exc:
+                result["save_error"] = f"could not copy to {output_dir}: {exc}"
+        return result
 
     return jobs.submit("edit", run)
 
@@ -603,7 +632,23 @@ class ScanBody(BaseModel):
 @app.get("/api/library")
 def get_library():
     config = store.load_library()
-    return {"folders": config.get("folders", []), "videos": len(store.list_videos())}
+    return {
+        "folders": config.get("folders", []),
+        "output_dir": config.get("output_dir", ""),
+        "videos": len(store.list_videos()),
+    }
+
+
+@app.put("/api/library/output-dir")
+def set_output_dir(body: FolderBody):
+    """Set where finished exports are copied; empty disables the copy."""
+    path = body.path.strip()
+    if path and not Path(path).expanduser().is_dir():
+        raise HTTPException(400, f"not a folder: {Path(path).expanduser()}")
+    config = store.load_library()
+    config["output_dir"] = path
+    store.save_library(config)
+    return get_library()
 
 
 @app.post("/api/library/folders")

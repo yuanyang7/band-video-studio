@@ -5,6 +5,7 @@ Layout under DATA_DIR:
   <video_id>/proxy.mp4         downsampled playback/analysis proxy
   <video_id>/analysis.json     audio + vision analysis results
   <video_id>/crops.json        per-player crop regions
+  <video_id>/settings.json     last-used UI settings (render options, export range…)
   <video_id>/exports/          rendered edits
 """
 
@@ -71,11 +72,16 @@ def list_videos() -> list[dict]:
 
 
 def load_library() -> dict:
-    """Library config: {"folders": [path, ...]}."""
+    """Library config: {"folders": [path, ...], "output_dir": path-or-empty}.
+
+    output_dir is where finished exports are copied for easy access (defaults
+    to ~/Downloads); empty string means keep them only inside the data dir.
+    """
     path = DATA_DIR / "library.json"
-    if path.exists():
-        return json.loads(path.read_text())
-    return {"folders": []}
+    config = json.loads(path.read_text()) if path.exists() else {}
+    config.setdefault("folders", [])
+    config.setdefault("output_dir", "~/Downloads")
+    return config
 
 
 def save_library(config: dict) -> None:
