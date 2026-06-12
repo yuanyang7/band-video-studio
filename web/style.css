@@ -85,8 +85,10 @@ label { display: block; margin: 4px 0; }
 #export-panel h2 { color: #6db3f2; }
 #export-panel .row label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 
-/* cut-list timeline */
+/* cut-list strip (camera per moment, aligned under the detection timeline) */
 #cutlist-wrap { margin-top: 10px; }
+#cutlist-strip { margin-top: 4px; }
+#cutlist-strip .hint { margin: 2px 0 0; }
 #cutlist-canvas { width: 100%; border-radius: 4px; cursor: pointer; display: block; background: #1a1a2e; }
 #cutlist-legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; font-size: 11px; }
 #cutlist-legend span { display: flex; align-items: center; gap: 3px; }

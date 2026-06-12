@@ -72,6 +72,7 @@ async function openVideo(id) {
   cutList = null;
   applySettings(current.settings || {});
   $("cutlist-wrap").style.display = "none";
+  $("cutlist-strip").hidden = true;
   $("library-view").hidden = true;
   $("main").hidden = false;
   if (current.has_proxy) $("player").src = `/api/videos/${id}/stream`;
@@ -598,13 +599,14 @@ function viewColor(view) {
 }
 
 function drawCutList() {
-  if (!cutList || !cutList.length) return;
+  if (!cutList || !cutList.length || !current) return;
   const canvas = $("cutlist-canvas");
   const ctx = canvas.getContext("2d");
   const W = (canvas.width = canvas.clientWidth * devicePixelRatio);
   const H = canvas.height;
-  const dur = cutEnd - cutStart || 1;
-  const x = (t) => ((t - cutStart) / dur) * W;
+  // same time axis as the detection timeline above, so the bars line up
+  const dur = current.meta.duration || 1;
+  const x = (t) => (t / dur) * W;
   ctx.clearRect(0, 0, W, H);
 
   for (const cut of cutList) {
@@ -642,12 +644,24 @@ function renderCutLegend() {
   }
 }
 
-// click a segment to cycle its view
+const cutEventTime = (e) => {
+  const rect = $("cutlist-canvas").getBoundingClientRect();
+  const dur = (current && current.meta.duration) || 1;
+  return Math.min(Math.max(((e.clientX - rect.left) / rect.width) * dur, 0), dur);
+};
+let didDragCut = false;
+
+// click to seek (the strip shares the timeline's axis)
 $("cutlist-canvas").onclick = (e) => {
-  if (!cutList || draggingCutEdge) return;
-  const rect = e.target.getBoundingClientRect();
-  const dur = cutEnd - cutStart || 1;
-  const t = cutStart + ((e.clientX - rect.left) / rect.width) * dur;
+  if (!cutList || !current) return;
+  if (didDragCut) { didDragCut = false; return; }
+  $("player").currentTime = cutEventTime(e);
+};
+
+// double-click a segment to cycle its view
+$("cutlist-canvas").ondblclick = (e) => {
+  if (!cutList) return;
+  const t = cutEventTime(e);
   const idx = cutList.findIndex(c => t >= c.start && t < c.end);
   if (idx < 0) return;
   const cur = cutViews.indexOf(cutList[idx].view);
@@ -658,11 +672,11 @@ $("cutlist-canvas").onclick = (e) => {
 
 // drag edges to adjust cut boundaries
 const cutEdgeAt = (e) => {
-  if (!cutList) return null;
+  if (!cutList || !current) return null;
   const rect = $("cutlist-canvas").getBoundingClientRect();
-  const dur = cutEnd - cutStart || 1;
+  const dur = current.meta.duration || 1;
   const cx = e.clientX - rect.left;
-  const px = (t) => ((t - cutStart) / dur) * rect.width;
+  const px = (t) => (t / dur) * rect.width;
   for (let i = 0; i < cutList.length; i++) {
     if (Math.abs(cx - px(cutList[i].start)) < 6 && i > 0) return {index: i, edge: "start"};
     if (Math.abs(cx - px(cutList[i].end)) < 6 && i < cutList.length - 1) return {index: i, edge: "end"};
@@ -676,9 +690,8 @@ $("cutlist-canvas").onmousedown = (e) => {
 $("cutlist-canvas").onmousemove = (e) => {
   if (!cutList) return;
   if (draggingCutEdge) {
-    const rect = $("cutlist-canvas").getBoundingClientRect();
-    const dur = cutEnd - cutStart || 1;
-    const t = cutStart + ((e.clientX - rect.left) / rect.width) * dur;
+    didDragCut = true; // suppress the seek-click that fires on release
+    const t = cutEventTime(e);
     const {index, edge} = draggingCutEdge;
     const minLen = 0.5;
     if (edge === "start") {
@@ -726,6 +739,7 @@ $("simulate-btn").onclick = safe(async () => {
     cutStart = r.start || start;
     cutEnd = r.end || end;
     $("cutlist-wrap").style.display = "";
+    $("cutlist-strip").hidden = false;
     renderCutLegend();
     drawCutList();
   });

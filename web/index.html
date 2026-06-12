@@ -72,6 +72,11 @@
 <main id="main" hidden>
   <video id="player" controls></video>
   <canvas id="timeline" height="64"></canvas>
+  <div id="cutlist-strip" hidden>
+    <canvas id="cutlist-canvas" height="36"></canvas>
+    <div id="cutlist-legend"></div>
+    <p class="hint">Camera per moment, aligned with the timeline above. Click to seek. Double-click a segment to change its view; drag edges to adjust timing.</p>
+  </div>
   <div id="legend">
     <span class="chip song">song</span>
     <span class="chip highlight">highlight</span>
@@ -164,9 +169,7 @@
       <button id="simulate-btn">Simulate</button>
     </div>
     <div id="cutlist-wrap" style="display:none">
-      <p class="hint">Click a segment to change the view. Drag edges to adjust timing.</p>
-      <canvas id="cutlist-canvas" height="36"></canvas>
-      <div id="cutlist-legend"></div>
+      <p class="hint">Cut list ready — see the camera strip under the timeline. Edit it there, then export.</p>
       <div class="row">
         <input type="text" id="export-name" placeholder="file name (optional)">
         <button id="export-btn">Export</button>
