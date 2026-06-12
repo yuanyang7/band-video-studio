@@ -151,6 +151,14 @@ def _track_at(track, t: float) -> float:
     return float(np.interp(t, times, values, left=values[0], right=values[-1]))
 
 
+ROLE_TO_STEM = {
+    "singer": "vocals",
+    "drums": "drums",
+    "bass": "bass",
+    "keys": "other",
+}
+
+
 def build_smart_cutlist(
     views: list[str],
     start: float,
@@ -163,11 +171,14 @@ def build_smart_cutlist(
     pano_views: set[str] | None = None,
     singer_views: set[str] | None = None,
     vocal_track: tuple[list[float], list[float]] | None = None,
+    stem_tracks: dict[str, tuple[list[float], list[float]]] | None = None,
+    role_map: dict[str, str] | None = None,
     centers: dict[str, float] | None = None,
     seed: int | None = None,
     w_motion: float = 1.0,
     w_audio: float = 1.5,
     w_vocal: float = 1.2,
+    w_stem: float = 1.0,
     w_center: float = 0.35,
     w_wide: float = 1.2,
     even_weight: float = 1.0,
@@ -181,11 +192,13 @@ def build_smart_cutlist(
       - per-view motion (activity z-score),
       - audio-event routing (peaks -> soloist, fun -> pano/room,
         vocal entrances and sustained singing -> singer views),
+      - per-instrument stem energy (drums/bass/keys boost matching views),
       - a small bonus for views framed near the centre of the stage,
       - a "wide refresh" bonus so a pano/group view returns every
         ~wide_refresh * switch_s seconds (keeps the whole band in the story),
       - an evenness penalty for views that already had more than their fair
         share of screen time.
+
     """
     if not views:
         raise ValueError("need at least one view")
@@ -195,6 +208,8 @@ def build_smart_cutlist(
     activity = activity or {}
     pano_views = pano_views or set()
     singer_views = singer_views or set()
+    stem_tracks = stem_tracks or {}
+    role_map = role_map or {}
     centers = centers or {}
     min_len, max_len = 0.6 * switch_s, 1.8 * switch_s
 
@@ -217,11 +232,20 @@ def build_smart_cutlist(
         wide_due = pano_views and (t - last_wide) >= wide_refresh * switch_s
 
         choices = [v for v in views if v != prev] or views
+
         best_view, best_score, best_reason = choices[0], -1e9, "motion"
         most_active = max(choices, key=lambda v: _activity_at(activity, v, mid))
         for v in choices:
             score = w_motion * _activity_at(activity, v, mid)
             reason = "motion"
+            # stem-aware boost: each role gets a bonus from its instrument track
+            v_role = role_map.get(v, "")
+            v_stem_name = ROLE_TO_STEM.get(v_role, "")
+            if v_stem_name and v_stem_name in stem_tracks:
+                stem_level = _track_at(stem_tracks[v_stem_name], mid)
+                if stem_level > 0.05:
+                    score += w_stem * min(1.0, stem_level / 0.15)
+                    reason = f"{v_stem_name}->{v_role}"
             if v in singer_views and vocal_level > 0.02:
                 score += w_vocal * min(1.0, vocal_level / 0.08)
                 reason = "vocals->singer"
@@ -289,25 +313,53 @@ def _window(cx: float, cy: float, w: int, h: int, src_w: int, src_h: int):
 
 
 def drift_filter(crop_px, n_frames: int, out_w: int, out_h: int, fps: float,
-                 *, amount: float = 0.06, seed: int | None = None) -> str:
-    """Subtle handheld push-in within one shot via zoompan (no aspect change)."""
+                 *, amount: float = 0.03, seed: int | None = None) -> str:
+    """Subtle handheld camera drift via zoompan.
+
+    Three things keep the motion fluid instead of pixel-steppy:
+    - the crop is supersampled to 2x the output before zoompan, so zoompan's
+      integer x/y rounding lands at half an output pixel;
+    - the zoom has a constant base of (1+amount), so the drift has headroom
+      from the very first frame (a pure push-in starts with zero headroom);
+    - the sine amplitudes are sizable fractions of that headroom, keeping the
+      wander well above the rounding threshold.
+    """
     rng = random.Random(seed)
     x, y, w, h = crop_px
-    # zoompan operates on the cropped region scaled up by `amount` of headroom so
-    # it can push in without ever upscaling past the source detail.
     sw, sh = _even(w), _even(h)
     denom = max(1, n_frames - 1)
-    p = f"min(1,on/{denom})"  # commas are literal inside the quoted expression
-    z = f"(1+{amount:.4f}*{p})"  # 1.0 -> 1+amount, a slow push-in
-    # drift the centre a touch in a seeded direction for a human, non-static feel
-    dx, dy = rng.uniform(-1, 1) * amount * 0.5, rng.uniform(-1, 1) * amount * 0.5
-    xe = f"((iw-iw/zoom)*(0.5+{dx:.4f}*{p}))"
-    ye = f"((ih-ih/zoom)*(0.5+{dy:.4f}*{p}))"
-    # zoompan emits frames on the *input* timebase, not 1/fps, so a source with a
-    # fine timebase (e.g. 1/15360) explodes the duration ~500-1000x downstream.
-    # Re-stamp PTS onto a clean 1/fps grid so concat/fps see the real duration.
+    ss_w, ss_h = out_w * 2, out_h * 2
+
+    # constant base zoom for headroom, plus a gentle extra push-in
+    z = f"({1 + amount:.4f}+{amount * 0.5:.4f}*min(1,on/{denom}))"
+
+    # XY drift: 3 slow overlapping sines, amplitudes as fractions of the
+    # headroom around centre (sum stays under 0.5 so we never hit the edge)
+    periods = [fps * rng.uniform(4, 6),
+               fps * rng.uniform(8, 12),
+               fps * rng.uniform(15, 22)]
+    phases = [rng.uniform(0, 6.283) for _ in range(6)]
+    ax = [rng.uniform(0.18, 0.26),
+          rng.uniform(0.08, 0.14),
+          rng.uniform(0.03, 0.06)]
+    ay = [rng.uniform(0.18, 0.26),
+          rng.uniform(0.08, 0.14),
+          rng.uniform(0.03, 0.06)]
+
+    x_terms = "+".join(
+        f"{a:.4f}*sin(on/{p:.1f}*2*PI+{ph:.4f})"
+        for a, p, ph in zip(ax, periods, phases[:3])
+    )
+    y_terms = "+".join(
+        f"{a:.4f}*sin(on/{p:.1f}*2*PI+{ph:.4f})"
+        for a, p, ph in zip(ay, periods, phases[3:])
+    )
+    xe = f"((iw-iw/zoom)*(0.5+{x_terms}))"
+    ye = f"((ih-ih/zoom)*(0.5+{y_terms}))"
+
     return (
         f"crop={sw}:{sh}:{x}:{y},"
+        f"scale={ss_w}:{ss_h}:flags=lanczos,"
         f"zoompan=z='{z}':x='{xe}':y='{ye}':d=1:s={out_w}x{out_h}:fps={fps},"
         f"setpts=N/{fps}/TB"
     )
@@ -348,6 +400,20 @@ def transition_windows(prev_crop, crop_px, src_w: int, src_h: int):
     return start, (x, y, w, h)
 
 
+def _merge_same_view(cuts: list[dict]) -> list[dict]:
+    """Merge consecutive cuts with the same view into one longer shot."""
+    if not cuts:
+        return cuts
+    merged = [dict(cuts[0])]
+    for cut in cuts[1:]:
+        if cut["view"] == merged[-1]["view"]:
+            merged[-1]["end"] = cut["end"]
+            merged[-1]["_merged"] = True
+        else:
+            merged.append(dict(cut))
+    return merged
+
+
 def render(
     source: str,
     src_w: int,
@@ -380,6 +446,7 @@ def render(
     video time `audio_offset`, so the exported span [seg_start, seg_end] maps to
     reference time [seg_start - audio_offset, seg_end - audio_offset].
     """
+    cuts = _merge_same_view(cuts)
     out_w, out_h = PRESETS[orientation]
     target_aspect = out_w / out_h
 
@@ -430,7 +497,7 @@ def render(
                 ends = pano_sweep(pano_px[view], target_aspect, src_w, src_h, seed=(seed or 0) + i)
                 if ends:
                     chain = slide_filter(ends[0], ends[1], out_w, out_h, dur, fps)
-            if chain is None and camera_motion:
+            if chain is None and camera_motion and not cut.get("_merged"):
                 n = max(1, round(dur * fps))
                 chain = drift_filter((x, y, w, h), n, out_w, out_h, fps, seed=(seed or 0) + i)
             if chain is None:  # static shot inside motion mode — keep fps uniform
