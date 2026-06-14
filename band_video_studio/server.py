@@ -231,9 +231,10 @@ async def sync_audio(video_id: str, file: UploadFile):
         _prepare(video, progress)
         # align on the proxy soundtrack (decodes far faster than the 4K source)
         proxy = str(store.video_dir(video_id) / "proxy.mp4")
-        result = align.align(proxy, str(ref_path), progress=progress)
-        if result["duration"] <= 0:
+        alignment_result = align.align(proxy, str(ref_path), progress=progress)
+        if alignment_result.duration <= 0:
             raise RuntimeError("no overlap found — is this a recording of a song in this video?")
+        result = alignment_result.to_dict()
         result["file"] = file.filename
         result["ref_path"] = str(ref_path)
         store.save_artifact(video_id, "sync", result)

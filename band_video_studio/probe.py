@@ -14,7 +14,9 @@ from pathlib import Path
 
 import numpy as np
 
-AUDIO_SR = 16000  # mono 16 kHz — what YAMNet expects
+# Audio decode lives in the alignment sub-package; re-export so existing
+# callers (audio.py, lyrics.py, server.py) keep working unchanged.
+from .alignment.io import AUDIO_SR, extract_audio  # noqa: F401 (re-exported)
 
 
 def _run(cmd: list[str]) -> bytes:
@@ -88,19 +90,6 @@ def make_proxy(src: str, dest: Path, height: int = PROXY_HEIGHT, progress=None) 
             _run(base + ["-c:v", "libx264", "-preset", "veryfast", "-crf", "26"] + tail)
         tmp.replace(dest)
     return dest
-
-
-def extract_audio(src: str, start: float = 0.0, duration: float | None = None) -> np.ndarray:
-    """Decode audio to float32 mono PCM at AUDIO_SR."""
-    cmd = ["ffmpeg", "-v", "error"]
-    if start:
-        cmd += ["-ss", str(start)]
-    cmd += ["-i", src]
-    if duration is not None:
-        cmd += ["-t", str(duration)]
-    cmd += ["-vn", "-ac", "1", "-ar", str(AUDIO_SR), "-f", "f32le", "-"]
-    raw = _run(cmd)
-    return np.frombuffer(raw, dtype=np.float32)
 
 
 def extract_frame_jpeg(src: str, t: float, height: int = 540) -> bytes:

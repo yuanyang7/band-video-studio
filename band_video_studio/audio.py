@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from . import probe
+from .alignment.signal import ONSET_HOP, ONSET_WIN, onset_envelope  # noqa: F401 (re-exported)
 from .models import model_path
 
 WINDOW_S = 0.975  # YAMNet's native window hop
@@ -206,28 +207,7 @@ def find_instrumental_sections(
 # audio with numpy only (no librosa): spectral-flux onset envelope -> tempo via
 # autocorrelation -> phase-aligned beat times. Good enough to snap cut points to.
 
-ONSET_HOP = 512        # samples per onset frame (~32 ms at 16 kHz)
-ONSET_WIN = 1024       # analysis window for the onset STFT
 TEMPO_MIN, TEMPO_MAX = 60.0, 180.0  # plausible rehearsal tempo range (BPM)
-
-
-def onset_envelope(samples: np.ndarray, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
-    """Spectral-flux onset strength per ~32 ms frame. Returns (times, envelope)."""
-    if len(samples) < ONSET_WIN:
-        return np.array([]), np.array([])
-    n = 1 + (len(samples) - ONSET_WIN) // ONSET_HOP
-    window = np.hanning(ONSET_WIN).astype(np.float32)
-    frames = np.empty((n, ONSET_WIN), dtype=np.float32)
-    for i in range(n):
-        start = i * ONSET_HOP
-        frames[i] = samples[start:start + ONSET_WIN] * window
-    mag = np.abs(np.fft.rfft(frames, axis=1))
-    flux = np.diff(mag, axis=0)
-    flux[flux < 0] = 0.0  # half-wave rectify: onsets are energy *increases*
-    env = flux.sum(axis=1)
-    env = np.concatenate([[0.0], env])  # align length with frame count
-    times = (np.arange(n) * ONSET_HOP + ONSET_WIN / 2) / sample_rate
-    return times, env
 
 
 def estimate_tempo(env: np.ndarray, hop_s: float) -> float:
