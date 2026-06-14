@@ -745,6 +745,27 @@ $("simulate-btn").onclick = safe(async () => {
   });
 });
 
+$("raw-cut-btn").onclick = safe(async () => {
+  if (!current) return;
+  const start = parseFloat($("edit-start").value);
+  const end = parseFloat($("edit-end").value);
+  if (!(end > start)) { alert("Set a valid start/end range first."); return; }
+  const job = await post(`/videos/${current.id}/edit-raw`, {
+    start, end,
+    name: $("export-name").value.trim() || null,
+  });
+  watchJob(job.id, (done) => {
+    refreshExports();
+    const r = done.result || {};
+    if (r.saved_to) {
+      $("job-text").textContent = `✅ raw cut → ${r.saved_to}`;
+      setTimeout(() => ($("job-text").textContent = ""), 8000);
+    } else if (r.save_error) {
+      alert(`Raw cut rendered, but: ${r.save_error}`);
+    }
+  });
+});
+
 $("export-btn").onclick = safe(async () => {
   if (!current || !cutList || !cutList.length) {
     alert("Simulate first to generate a cut list, then export.");

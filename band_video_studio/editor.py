@@ -536,3 +536,49 @@ def render(
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg render failed: {result.stderr.decode(errors='replace')[-2000:]}")
     return out_path
+
+
+def render_raw(
+    source: str,
+    out_path: Path,
+    start: float,
+    end: float,
+    audio_source: str | None = None,
+    audio_offset: float = 0.0,
+    progress=None,
+) -> Path:
+    """Trim [start, end] of `source` with no re-encoding of the video stream.
+
+    Video is stream-copied to preserve the original quality; the start may snap
+    to the nearest preceding keyframe. If `audio_source` is given, audio is
+    taken from that file at [start - audio_offset, end - audio_offset] and
+    re-encoded to AAC; otherwise the source audio is stream-copied too.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if progress:
+        progress("trimming source (stream copy)", pct=80)
+    if audio_source:
+        a_start = max(0.0, start - audio_offset)
+        a_end = max(a_start, end - audio_offset)
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", source,
+            "-ss", f"{a_start:.3f}", "-to", f"{a_end:.3f}", "-i", audio_source,
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+            str(out_path),
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", f"{start:.3f}", "-to", f"{end:.3f}", "-i", source,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            str(out_path),
+        ]
+    result = subprocess.run(cmd, capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg raw cut failed: {result.stderr.decode(errors='replace')[-2000:]}")
+    return out_path

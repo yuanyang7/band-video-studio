@@ -602,6 +602,52 @@ def make_edit(video_id: str, body: RenderBody):
     return jobs.submit("edit", run)
 
 
+class RawCutBody(BaseModel):
+    start: float
+    end: float
+    name: str | None = None
+
+
+@app.post("/api/videos/{video_id}/edit-raw")
+def make_raw_cut(video_id: str, body: RawCutBody):
+    """Trim the original video to [start, end] with no re-encoding.
+
+    Keeps the source video pixels/codec verbatim (stream copy). If the video has
+    a synced reference audio, it replaces the soundtrack; otherwise the source
+    audio is stream-copied too. No view-switching, crops, or filters.
+    """
+    video = _video_or_404(video_id)
+
+    def run(progress=None):
+        audio_source, audio_offset, start, end = _resolve_sync(
+            video_id, body.start, body.end)
+        synced = bool(audio_source)
+        suffix = "_raw_synced" if synced else "_raw"
+        base = re.sub(r"[^\w\- .()\[\]]", "", (body.name or "").strip(), flags=re.UNICODE)
+        base = base.strip(". ").removesuffix(".mp4")
+        if not base:
+            base = f"edit_{int(start)}-{int(end)}{suffix}"
+        out = store.video_dir(video_id) / "exports" / (base + ".mp4")
+        editor.render_raw(
+            video["source_path"], out, start=start, end=end,
+            audio_source=audio_source, audio_offset=audio_offset, progress=progress,
+        )
+        result = {"file": out.name, "raw": True, "synced": synced}
+        output_dir = (store.load_library().get("output_dir") or "").strip()
+        if output_dir:
+            try:
+                dest_dir = Path(output_dir).expanduser()
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / out.name
+                shutil.copy2(out, dest)
+                result["saved_to"] = str(dest)
+            except OSError as exc:
+                result["save_error"] = f"could not copy to {output_dir}: {exc}"
+        return result
+
+    return jobs.submit("edit-raw", run)
+
+
 @app.get("/api/videos/{video_id}/exports")
 def list_exports(video_id: str):
     _video_or_404(video_id)
